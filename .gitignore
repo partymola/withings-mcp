@@ -1,0 +1,12 @@
+config/*
+!config/.gitkeep
+*.db
+*.db-journal
+*.db-wal
+.env
+__pycache__/
+*.pyc
+.venv/
+dist/
+*.egg-info/
+import_legacy.py

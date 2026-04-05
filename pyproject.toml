@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "withings-mcp"
+version = "0.1.0"
+description = "MCP server for the Withings Health API with OAuth, local cache, and trend analysis."
+readme = "README.md"
+license = "GPL-3.0-or-later"
+requires-python = ">=3.13"
+keywords = ["withings", "mcp", "model-context-protocol", "health", "fitness", "sleep"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+]
+dependencies = [
+    "mcp>=1.6.0",
+]
+
+[project.scripts]
+withings-mcp = "main:main"
+
+[project.urls]
+Repository = "https://github.com/partymola/withings-mcp"
+Issues = "https://github.com/partymola/withings-mcp/issues"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.5",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
