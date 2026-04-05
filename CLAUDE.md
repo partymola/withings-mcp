@@ -89,4 +89,4 @@ All tests use in-memory SQLite and fictional data from `tests/fixtures.py`.
 - **"Token refresh failed"**: Re-run `withings-mcp auth` (refresh token may have expired)
 - **Empty results**: Run `withings_sync` first to populate the cache
 - **"Rate limited"**: Wait 60 seconds and retry
-- **Python 3.14 issues**: Use Python 3.13 (pydantic-core compatibility)
+- **Python 3.13+ required**. Python 3.14 now works (pydantic-core 2.45.0+ has 3.14 wheels).
