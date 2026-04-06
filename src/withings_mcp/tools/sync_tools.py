@@ -23,6 +23,86 @@ logger = logging.getLogger(__name__)
 # All cacheable measure type IDs
 _BODY_MEASTYPES = ",".join(str(k) for k in MEASURE_TYPES.keys())
 
+
+def run_sync(types: list[str], days: int = 30) -> dict:
+    """Sync one or more data types from the Withings API to the local cache.
+
+    Args:
+        types: List of data types to sync. Valid values: "body", "sleep",
+            "activity", "workouts".
+        days: Days of history to fetch on first sync (default: 30).
+            Subsequent syncs are incremental from last sync timestamp.
+
+    Returns a dict mapping each data type to its sync result.
+    """
+    conn = db.get_db()
+    results = {}
+    today = date.today()
+
+    for dtype in types:
+        try:
+            # Determine start date: last sync or N days ago
+            last = db.get_last_sync(conn, dtype)
+            if last:
+                start_date = datetime.fromisoformat(last).date()
+            else:
+                start_date = today - timedelta(days=days)
+
+            end_date = today
+            start_ymd = start_date.isoformat()
+            end_ymd = end_date.isoformat()
+            start_ts = int(datetime.combine(start_date, datetime.min.time(),
+                                             tzinfo=timezone.utc).timestamp())
+            end_ts = int(datetime.combine(end_date + timedelta(days=1),
+                                           datetime.min.time(),
+                                           tzinfo=timezone.utc).timestamp())
+
+            if dtype == "body":
+                count = _sync_body(conn, start_ts, end_ts)
+            elif dtype == "sleep":
+                count = _sync_sleep(conn, start_ymd, end_ymd)
+            elif dtype == "activity":
+                count = _sync_activity(conn, start_ymd, end_ymd)
+            elif dtype == "workouts":
+                count = _sync_workouts(conn, start_ymd, end_ymd)
+            else:
+                results[dtype] = {"status": "error", "message": f"Unknown type: {dtype}"}
+                continue
+
+            db.log_sync(conn, dtype, "ok", count)
+            results[dtype] = {"status": "ok", "records": count, "range": f"{start_ymd} to {end_ymd}"}
+
+        except api.WithingsRateLimitError:
+            db.log_sync(conn, dtype, "partial", notes="rate limited")
+            results[dtype] = {"status": "rate_limited", "message": "Retry in 60 seconds."}
+        except api.WithingsAuthError as e:
+            results[dtype] = {"status": "auth_error", "message": str(e)}
+        except api.WithingsAPIError as e:
+            db.log_sync(conn, dtype, "error", notes=str(e))
+            results[dtype] = {"status": "error", "message": str(e)}
+
+    conn.close()
+    return results
+
+
+def auto_sync_if_stale(data_type: str) -> None:
+    """Trigger an incremental sync if the cache for data_type is not current.
+
+    Checks whether the last successful sync for data_type was before today.
+    If so, runs run_sync([data_type]) to bring the cache up to date.
+    All exceptions are silently swallowed - this is best-effort only.
+    """
+    try:
+        conn = db.get_db()
+        last = db.get_last_sync(conn, data_type)
+        conn.close()
+
+        today = date.today().isoformat()
+        if last is None or last[:10] < today:
+            run_sync([data_type])
+    except Exception:
+        pass
+
 # Sleep summary fields to request
 _SLEEP_DATA_FIELDS = (
     "total_sleep_time,deepsleepduration,lightsleepduration,remsleepduration,"
@@ -282,55 +362,5 @@ async def withings_sync(
     if "all" in types:
         types = ["body", "sleep", "activity", "workouts"]
 
-    def _do_sync():
-        conn = db.get_db()
-        results = {}
-        today = date.today()
-
-        for dtype in types:
-            try:
-                # Determine start date: last sync or N days ago
-                last = db.get_last_sync(conn, dtype)
-                if last:
-                    start_date = datetime.fromisoformat(last).date()
-                else:
-                    start_date = today - timedelta(days=days)
-
-                end_date = today
-                start_ymd = start_date.isoformat()
-                end_ymd = end_date.isoformat()
-                start_ts = int(datetime.combine(start_date, datetime.min.time(),
-                                                 tzinfo=timezone.utc).timestamp())
-                end_ts = int(datetime.combine(end_date + timedelta(days=1),
-                                               datetime.min.time(),
-                                               tzinfo=timezone.utc).timestamp())
-
-                if dtype == "body":
-                    count = _sync_body(conn, start_ts, end_ts)
-                elif dtype == "sleep":
-                    count = _sync_sleep(conn, start_ymd, end_ymd)
-                elif dtype == "activity":
-                    count = _sync_activity(conn, start_ymd, end_ymd)
-                elif dtype == "workouts":
-                    count = _sync_workouts(conn, start_ymd, end_ymd)
-                else:
-                    results[dtype] = {"status": "error", "message": f"Unknown type: {dtype}"}
-                    continue
-
-                db.log_sync(conn, dtype, "ok", count)
-                results[dtype] = {"status": "ok", "records": count, "range": f"{start_ymd} to {end_ymd}"}
-
-            except api.WithingsRateLimitError:
-                db.log_sync(conn, dtype, "partial", notes="rate limited")
-                results[dtype] = {"status": "rate_limited", "message": "Retry in 60 seconds."}
-            except api.WithingsAuthError as e:
-                results[dtype] = {"status": "auth_error", "message": str(e)}
-            except api.WithingsAPIError as e:
-                db.log_sync(conn, dtype, "error", notes=str(e))
-                results[dtype] = {"status": "error", "message": str(e)}
-
-        conn.close()
-        return results
-
-    results = await anyio.to_thread.run_sync(_do_sync)
+    results = await anyio.to_thread.run_sync(lambda: run_sync(types, days))
     return format_response(results)

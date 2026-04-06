@@ -10,6 +10,7 @@ import anyio
 from ..mcp_instance import mcp
 from ..helpers import format_response, require_auth, parse_date, format_duration
 from .. import db
+from .sync_tools import auto_sync_if_stale
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,7 @@ def _trend_body(conn, start_date: str, end_date: str, period: str) -> dict:
     """Compute body composition trends."""
     rows = db.query_body(conn, start_date, end_date)
     if not rows:
-        return {"message": "No body data in cache for this period. Run withings_sync first."}
+        return {"message": "No body data in cache for this period. Try live=True on the get_* tools to fetch directly from the API."}
 
     fields = ["weight_kg", "fat_pct", "fat_mass_kg", "muscle_mass_kg",
               "bone_mass_kg", "hydration_kg"]
@@ -65,7 +66,7 @@ def _trend_sleep(conn, start_date: str, end_date: str, period: str) -> dict:
     """Compute sleep trends."""
     rows = db.query_sleep(conn, start_date, end_date)
     if not rows:
-        return {"message": "No sleep data in cache for this period. Run withings_sync first."}
+        return {"message": "No sleep data in cache for this period. Try live=True on the get_* tools to fetch directly from the API."}
 
     fields = ["total_sleep_sec", "deep_sleep_sec", "light_sleep_sec",
               "rem_sleep_sec", "sleep_score", "hr_average", "rr_average"]
@@ -100,7 +101,7 @@ def _trend_activity(conn, start_date: str, end_date: str, period: str) -> dict:
     """Compute activity trends."""
     rows = db.query_activities(conn, start_date, end_date)
     if not rows:
-        return {"message": "No activity data in cache for this period. Run withings_sync first."}
+        return {"message": "No activity data in cache for this period. Try live=True on the get_* tools to fetch directly from the API."}
 
     fields = ["steps", "distance_m", "active_calories", "total_calories"]
     buckets = defaultdict(lambda: defaultdict(list))
@@ -220,7 +221,7 @@ async def withings_trends(
     """Analyse trends in cached health data.
 
     Computes averages, min/max, and changes over time from the local
-    cache. Run withings_sync first to populate data.
+    cache. Auto-syncs if the cache is stale (no sync today).
 
     Args:
         data_type: What to analyse. Options: "body", "sleep", "activity".
@@ -239,6 +240,7 @@ async def withings_trends(
     Not for raw data -- use withings_get_body/sleep/activity instead.
     """
     def _analyse():
+        auto_sync_if_stale(data_type)
         conn = db.get_db()
 
         if compare:

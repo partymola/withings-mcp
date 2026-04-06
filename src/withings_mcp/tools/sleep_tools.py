@@ -12,6 +12,7 @@ from ..helpers import (
 )
 from .. import api, db
 from ..config import WITHINGS_SLEEP_V2_URL
+from .sync_tools import auto_sync_if_stale
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +138,7 @@ async def withings_get_sleep(
     if live:
         entries = await anyio.to_thread.run_sync(lambda: _fetch_summary_live(start, end))
     else:
+        await anyio.to_thread.run_sync(lambda: auto_sync_if_stale("sleep"))
         def _query():
             conn = db.get_db()
             rows = db.query_sleep(conn, start.isoformat(), end.isoformat())
@@ -155,7 +157,7 @@ async def withings_get_sleep(
     if not entries:
         return format_response({
             "message": "No sleep data found for this period.",
-            "hint": "Run withings_sync first, or try live=True.",
+            "hint": "Try live=True to fetch directly from the API.",
         })
 
     return format_response({"nights": entries, "count": len(entries)})

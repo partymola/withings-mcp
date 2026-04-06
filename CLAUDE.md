@@ -28,13 +28,13 @@ withings-mcp          # Start MCP server (stdio transport, used by Claude Code)
 | Tool | Source | Purpose |
 |------|--------|---------|
 | `withings_sync` | Live API -> SQLite | Incremental sync of body, sleep, activity, workouts |
-| `withings_get_body` | Cache / Live | Body composition (weight, fat%, muscle, bone, etc.) |
-| `withings_get_sleep` | Cache / Live | Sleep summaries or detailed phase time-series |
-| `withings_get_activity` | Cache / Live | Daily steps, distance, calories, active time |
-| `withings_get_workouts` | Cache / Live | Workout sessions with type, duration, HR |
+| `withings_get_body` | Cache (auto-sync) / Live | Body composition (weight, fat%, muscle, bone, etc.) |
+| `withings_get_sleep` | Cache (auto-sync) / Live | Sleep summaries or detailed phase time-series |
+| `withings_get_activity` | Cache (auto-sync) / Live | Daily steps, distance, calories, active time |
+| `withings_get_workouts` | Cache (auto-sync) / Live | Workout sessions with type, duration, HR |
 | `withings_get_heart` | Live only | ECG recordings and AFib detection |
 | `withings_get_devices` | Live only | Connected devices, battery, firmware |
-| `withings_trends` | Cache only | Period averages, comparisons, min/max/delta |
+| `withings_trends` | Cache (auto-sync) | Period averages, comparisons, min/max/delta |
 
 ## Architecture
 

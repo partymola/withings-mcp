@@ -12,6 +12,7 @@ from ..helpers import (
 )
 from .. import api, db
 from ..config import WITHINGS_MEASURE_URL
+from .sync_tools import auto_sync_if_stale
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +90,7 @@ async def withings_get_body(
     if live:
         entries = await anyio.to_thread.run_sync(lambda: _fetch_live(start, end))
     else:
+        await anyio.to_thread.run_sync(lambda: auto_sync_if_stale("body"))
         def _query():
             conn = db.get_db()
             rows = db.query_body(conn, start.isoformat(), end.isoformat())
@@ -105,7 +107,7 @@ async def withings_get_body(
     if not entries:
         return format_response({
             "message": "No body measurements found for this period.",
-            "hint": "Run withings_sync first, or try live=True.",
+            "hint": "Try live=True to fetch directly from the API.",
         })
 
     return format_response({"measurements": entries, "count": len(entries)})

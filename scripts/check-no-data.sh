@@ -18,7 +18,7 @@ for pattern in '*.db' '*.db-journal' '*.db-wal'; do
 done
 
 # Check for config secrets
-if git diff --cached --name-only | grep -qE '^config/.*\.(json|env)$'; then
+if git diff --cached --name-only | grep -E '^config/.*\.(json|env)$' | grep -qvE '\.example\.'; then
     echo "ERROR: Staged file in config/ - credentials and tokens must not be committed"
     errors=1
 fi
