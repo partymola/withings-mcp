@@ -1,0 +1,6 @@
+{
+  "$schema": "https://glama.ai/mcp/schemas/server.json",
+  "maintainers": ["partymola"],
+  "name": "withings-mcp",
+  "description": "Provides read-only access to Withings health metrics including body composition, sleep, workouts, and ECG data with local SQLite caching and trend analysis. Features incremental synchronization, automatic OAuth token refresh, and supports all 200+ Withings measurement types for comprehensive health tracking."
+}
