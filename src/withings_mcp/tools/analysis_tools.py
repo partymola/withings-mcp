@@ -142,12 +142,12 @@ def _compare_periods(conn, data_type: str, compare_str: str) -> dict:
         m = re.match(r"last_(\d+)d", part)
         if m:
             days = int(m.group(1))
-            ranges.append((today - timedelta(days=days), today))
+            ranges.append((today - timedelta(days=days - 1), today))
             continue
         m = re.match(r"previous_(\d+)d", part)
         if m:
             days = int(m.group(1))
-            ranges.append((today - timedelta(days=days * 2), today - timedelta(days=days)))
+            ranges.append((today - timedelta(days=days * 2 - 1), today - timedelta(days=days)))
             continue
         if re.match(r"^\d{4}-\d{2}$", part):
             year, month = int(part[:4]), int(part[5:7])
