@@ -20,17 +20,17 @@ dependencies = [
     "mcp>=1.6.0",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.5",
+]
+
 [project.scripts]
 withings-mcp = "main:main"
 
 [project.urls]
 Repository = "https://github.com/partymola/withings-mcp"
 Issues = "https://github.com/partymola/withings-mcp/issues"
-
-[dependency-groups]
-dev = [
-    "pytest>=8.3.5",
-]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
