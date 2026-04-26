@@ -364,3 +364,5 @@ async def withings_sync(
 
     results = await anyio.to_thread.run_sync(lambda: run_sync(types, days))
     return format_response(results)
+
+// Contributed via automated bounty system
