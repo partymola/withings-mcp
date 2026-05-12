@@ -5,13 +5,16 @@ from datetime import datetime, timedelta, timezone
 
 import anyio
 
-from ..mcp_instance import mcp
-from ..helpers import (
-    format_response, require_auth, parse_date,
-    format_duration, resolve_sleep_state,
-)
 from .. import api, db
 from ..config import WITHINGS_SLEEP_V2_URL
+from ..helpers import (
+    format_duration,
+    format_response,
+    parse_date,
+    require_auth,
+    resolve_sleep_state,
+)
+from ..mcp_instance import mcp
 from .sync_tools import auto_sync_if_stale
 
 logger = logging.getLogger(__name__)
@@ -29,31 +32,36 @@ def _fetch_summary_live(start_date, end_date):
     offset = 0
 
     while True:
-        body = api.post(WITHINGS_SLEEP_V2_URL, {
-            "action": "getsummary",
-            "startdateymd": start_date.isoformat(),
-            "enddateymd": end_date.isoformat(),
-            "data_fields": _SUMMARY_FIELDS,
-            "offset": offset,
-        })
+        body = api.post(
+            WITHINGS_SLEEP_V2_URL,
+            {
+                "action": "getsummary",
+                "startdateymd": start_date.isoformat(),
+                "enddateymd": end_date.isoformat(),
+                "data_fields": _SUMMARY_FIELDS,
+                "offset": offset,
+            },
+        )
 
         for entry in body.get("series", []):
             data = entry.get("data", {})
-            results.append({
-                "date": entry.get("date", ""),
-                "total_sleep": format_duration(data.get("total_sleep_time")),
-                "deep_sleep": format_duration(data.get("deepsleepduration")),
-                "light_sleep": format_duration(data.get("lightsleepduration")),
-                "rem_sleep": format_duration(data.get("remsleepduration")),
-                "awake": format_duration(data.get("wakeupduration")),
-                "wakeup_count": data.get("wakeupcount"),
-                "hr_average": data.get("hr_average"),
-                "hr_min": data.get("hr_min"),
-                "hr_max": data.get("hr_max"),
-                "rr_average": data.get("rr_average"),
-                "sleep_score": data.get("sleep_score"),
-                "snoring": format_duration(data.get("snoring")),
-            })
+            results.append(
+                {
+                    "date": entry.get("date", ""),
+                    "total_sleep": format_duration(data.get("total_sleep_time")),
+                    "deep_sleep": format_duration(data.get("deepsleepduration")),
+                    "light_sleep": format_duration(data.get("lightsleepduration")),
+                    "rem_sleep": format_duration(data.get("remsleepduration")),
+                    "awake": format_duration(data.get("wakeupduration")),
+                    "wakeup_count": data.get("wakeupcount"),
+                    "hr_average": data.get("hr_average"),
+                    "hr_min": data.get("hr_min"),
+                    "hr_max": data.get("hr_max"),
+                    "rr_average": data.get("rr_average"),
+                    "sleep_score": data.get("sleep_score"),
+                    "snoring": format_duration(data.get("snoring")),
+                }
+            )
 
         if body.get("more", False):
             offset = body.get("offset", 0)
@@ -65,28 +73,36 @@ def _fetch_summary_live(start_date, end_date):
 
 def _fetch_detail_live(start_date, end_date):
     """Fetch detailed sleep phases from the API. Max 7 days."""
-    start_ts = int(datetime.combine(start_date, datetime.min.time(),
-                                     tzinfo=timezone.utc).timestamp())
-    end_ts = int(datetime.combine(end_date + timedelta(days=1),
-                                   datetime.min.time(),
-                                   tzinfo=timezone.utc).timestamp())
+    start_ts = int(
+        datetime.combine(start_date, datetime.min.time(), tzinfo=timezone.utc).timestamp()
+    )
+    end_ts = int(
+        datetime.combine(
+            end_date + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc
+        ).timestamp()
+    )
 
-    body = api.post(WITHINGS_SLEEP_V2_URL, {
-        "action": "get",
-        "startdate": start_ts,
-        "enddate": end_ts,
-        "data_fields": "hr,rr,snoring",
-    })
+    body = api.post(
+        WITHINGS_SLEEP_V2_URL,
+        {
+            "action": "get",
+            "startdate": start_ts,
+            "enddate": end_ts,
+            "data_fields": "hr,rr,snoring",
+        },
+    )
 
     phases = []
     for entry in body.get("series", []):
-        phases.append({
-            "start": datetime.fromtimestamp(entry["startdate"], tz=timezone.utc).isoformat(),
-            "end": datetime.fromtimestamp(entry["enddate"], tz=timezone.utc).isoformat(),
-            "state": resolve_sleep_state(entry.get("state", 5)),
-            "hr": entry.get("hr"),
-            "rr": entry.get("rr"),
-        })
+        phases.append(
+            {
+                "start": datetime.fromtimestamp(entry["startdate"], tz=timezone.utc).isoformat(),
+                "end": datetime.fromtimestamp(entry["enddate"], tz=timezone.utc).isoformat(),
+                "state": resolve_sleep_state(entry.get("state", 5)),
+                "hr": entry.get("hr"),
+                "rr": entry.get("rr"),
+            }
+        )
 
     return phases
 
@@ -130,15 +146,18 @@ async def withings_get_sleep(
 
         phases = await anyio.to_thread.run_sync(lambda: _fetch_detail_live(start, end))
         if not phases:
-            return format_response({
-                "message": "No detailed sleep data found for this period.",
-            })
+            return format_response(
+                {
+                    "message": "No detailed sleep data found for this period.",
+                }
+            )
         return format_response({"phases": phases, "count": len(phases)})
 
     if live:
         entries = await anyio.to_thread.run_sync(lambda: _fetch_summary_live(start, end))
     else:
         await anyio.to_thread.run_sync(lambda: auto_sync_if_stale("sleep"))
+
         def _query():
             conn = db.get_db()
             rows = db.query_sleep(conn, start.isoformat(), end.isoformat())
@@ -152,12 +171,15 @@ async def withings_get_sleep(
                 r["awake"] = format_duration(r.get("awake_sec"))
                 r["snoring"] = format_duration(r.get("snoring_sec"))
             return rows
+
         entries = await anyio.to_thread.run_sync(_query)
 
     if not entries:
-        return format_response({
-            "message": "No sleep data found for this period.",
-            "hint": "Try live=True to fetch directly from the API.",
-        })
+        return format_response(
+            {
+                "message": "No sleep data found for this period.",
+                "hint": "Try live=True to fetch directly from the API.",
+            }
+        )
 
     return format_response({"nights": entries, "count": len(entries)})

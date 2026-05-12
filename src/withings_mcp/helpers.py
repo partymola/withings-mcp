@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 # --- Response formatting ---
 
+
 def format_response(result: Any) -> str:
     """JSON-serialize a result for MCP transport."""
     if isinstance(result, (dict, list)):
@@ -25,6 +26,7 @@ def format_response(result: Any) -> str:
 
 
 # --- Withings value decoding ---
+
 
 def parse_value(measure: dict) -> float:
     """Decode a Withings measurement value.
@@ -87,12 +89,11 @@ def _parse_single_date(date_str: str | None, default: date, is_end: bool) -> dat
     if re.match(r"^\d{4}-\d{2}-\d{2}$", date_str):
         return date.fromisoformat(date_str)
 
-    raise ValueError(
-        f"Invalid date '{date_str}'. Use YYYY-MM-DD, YYYY-MM, or Nd (e.g. '30d')."
-    )
+    raise ValueError(f"Invalid date '{date_str}'. Use YYYY-MM-DD, YYYY-MM, or Nd (e.g. '30d').")
 
 
 # --- Formatting helpers ---
+
 
 def format_duration(seconds: int | None) -> str:
     """Convert seconds to human-readable duration."""
@@ -116,15 +117,20 @@ def format_distance(meters: float | None) -> str:
 
 # --- Auth decorator ---
 
+
 def require_auth(func):
     """Decorator that checks credentials exist before calling a tool."""
+
     @functools.wraps(func)
     async def wrapper(*args, **kwargs):
         if not WITHINGS_CLIENT_PATH.exists() or not WITHINGS_TOKENS_PATH.exists():
-            return json.dumps({
-                "error": "Withings not configured. Run: withings-mcp auth",
-            })
+            return json.dumps(
+                {
+                    "error": "Withings not configured. Run: withings-mcp auth",
+                }
+            )
         return await func(*args, **kwargs)
+
     return wrapper
 
 
@@ -151,18 +157,53 @@ MEASURE_TYPES = {
 }
 
 WORKOUT_CATEGORIES = {
-    1: "walk", 2: "run", 3: "hiking", 4: "skating", 5: "bmx",
-    6: "cycling", 7: "swimming", 8: "surfing", 9: "kitesurfing",
-    10: "windsurfing", 11: "bodyboard", 12: "tennis", 13: "table_tennis",
-    14: "squash", 15: "badminton", 16: "weightlifting", 17: "calisthenics",
-    18: "elliptical", 19: "pilates", 20: "basketball", 21: "soccer",
-    22: "football", 23: "rugby", 24: "volleyball", 25: "waterpolo",
-    26: "horse_riding", 27: "golf", 28: "yoga", 29: "dancing",
-    30: "boxing", 31: "fencing", 32: "wrestling", 33: "martial_arts",
-    34: "skiing", 35: "snowboarding", 36: "other",
-    187: "rowing", 188: "zumba", 191: "baseball", 192: "handball",
-    193: "hockey", 194: "ice_hockey", 195: "climbing", 196: "ice_skating",
-    272: "multi_sport", 306: "indoor_walk", 307: "indoor_running",
+    1: "walk",
+    2: "run",
+    3: "hiking",
+    4: "skating",
+    5: "bmx",
+    6: "cycling",
+    7: "swimming",
+    8: "surfing",
+    9: "kitesurfing",
+    10: "windsurfing",
+    11: "bodyboard",
+    12: "tennis",
+    13: "table_tennis",
+    14: "squash",
+    15: "badminton",
+    16: "weightlifting",
+    17: "calisthenics",
+    18: "elliptical",
+    19: "pilates",
+    20: "basketball",
+    21: "soccer",
+    22: "football",
+    23: "rugby",
+    24: "volleyball",
+    25: "waterpolo",
+    26: "horse_riding",
+    27: "golf",
+    28: "yoga",
+    29: "dancing",
+    30: "boxing",
+    31: "fencing",
+    32: "wrestling",
+    33: "martial_arts",
+    34: "skiing",
+    35: "snowboarding",
+    36: "other",
+    187: "rowing",
+    188: "zumba",
+    191: "baseball",
+    192: "handball",
+    193: "hockey",
+    194: "ice_hockey",
+    195: "climbing",
+    196: "ice_skating",
+    272: "multi_sport",
+    306: "indoor_walk",
+    307: "indoor_running",
     308: "indoor_cycling",
 }
 

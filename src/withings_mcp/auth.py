@@ -14,13 +14,18 @@ import time
 import urllib.error
 import urllib.request
 import webbrowser
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse, parse_qs, urlencode
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import parse_qs, urlencode, urlparse
 
 from .config import (
-    CONFIG_DIR, WITHINGS_CLIENT_PATH, WITHINGS_TOKENS_PATH,
-    WITHINGS_AUTH_URL, WITHINGS_TOKEN_URL, WITHINGS_SCOPES,
-    WITHINGS_CALLBACK_PORT, WITHINGS_REDIRECT_URI,
+    CONFIG_DIR,
+    WITHINGS_AUTH_URL,
+    WITHINGS_CALLBACK_PORT,
+    WITHINGS_CLIENT_PATH,
+    WITHINGS_REDIRECT_URI,
+    WITHINGS_SCOPES,
+    WITHINGS_TOKEN_URL,
+    WITHINGS_TOKENS_PATH,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,14 +47,16 @@ def _load_json(path):
 
 def _exchange_code(code, client_id, client_secret):
     """Exchange auth code for tokens. Must complete within 30 seconds."""
-    data = urlencode({
-        "action": "requesttoken",
-        "grant_type": "authorization_code",
-        "client_id": client_id,
-        "client_secret": client_secret,
-        "code": code,
-        "redirect_uri": WITHINGS_REDIRECT_URI,
-    }).encode()
+    data = urlencode(
+        {
+            "action": "requesttoken",
+            "grant_type": "authorization_code",
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "code": code,
+            "redirect_uri": WITHINGS_REDIRECT_URI,
+        }
+    ).encode()
 
     req = urllib.request.Request(WITHINGS_TOKEN_URL, data=data, method="POST")
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
@@ -86,13 +93,15 @@ def refresh_token() -> str:
         logger.error("Token expired and no refresh token. Run: withings-mcp auth")
         raise RuntimeError("Token expired and no refresh token. Run: withings-mcp auth")
 
-    data = urlencode({
-        "action": "requesttoken",
-        "grant_type": "refresh_token",
-        "client_id": _cached_creds["client_id"],
-        "client_secret": _cached_creds["client_secret"],
-        "refresh_token": _cached_tokens["refresh_token"],
-    }).encode()
+    data = urlencode(
+        {
+            "action": "requesttoken",
+            "grant_type": "refresh_token",
+            "client_id": _cached_creds["client_id"],
+            "client_secret": _cached_creds["client_secret"],
+            "refresh_token": _cached_tokens["refresh_token"],
+        }
+    ).encode()
 
     req = urllib.request.Request(WITHINGS_TOKEN_URL, data=data, method="POST")
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
@@ -101,7 +110,7 @@ def refresh_token() -> str:
             body = json.loads(resp.read().decode())
     except urllib.error.URLError as e:
         logger.error("Token refresh failed: %s", e)
-        raise RuntimeError(f"Token refresh failed. Run: withings-mcp auth") from e
+        raise RuntimeError("Token refresh failed. Run: withings-mcp auth") from e
 
     if body.get("status") != 0:
         logger.error("Token refresh returned status %s", body.get("status"))
@@ -167,9 +176,7 @@ def setup_auth():
                 return
 
             # Exchange immediately (30-second window)
-            tokens, err = _exchange_code(
-                code, creds["client_id"], creds["client_secret"]
-            )
+            tokens, err = _exchange_code(code, creds["client_id"], creds["client_secret"])
             if err:
                 self._respond(500, f"Token exchange failed: {err}")
                 auth_result["error"] = err
@@ -181,22 +188,26 @@ def setup_auth():
             self.send_response(status_code)
             self.send_header("Content-Type", "text/html")
             self.end_headers()
-            self.wfile.write(
-                f"<html><body><h2>{message}</h2></body></html>".encode()
-            )
+            self.wfile.write(f"<html><body><h2>{message}</h2></body></html>".encode())
 
         def log_message(self, format, *args):
             pass
 
-    auth_url = WITHINGS_AUTH_URL + "?" + urlencode({
-        "response_type": "code",
-        "client_id": creds["client_id"],
-        "scope": WITHINGS_SCOPES,
-        "redirect_uri": WITHINGS_REDIRECT_URI,
-        "state": state,
-    })
+    auth_url = (
+        WITHINGS_AUTH_URL
+        + "?"
+        + urlencode(
+            {
+                "response_type": "code",
+                "client_id": creds["client_id"],
+                "scope": WITHINGS_SCOPES,
+                "redirect_uri": WITHINGS_REDIRECT_URI,
+                "state": state,
+            }
+        )
+    )
 
-    print(f"\nOpening browser for Withings auth...")
+    print("\nOpening browser for Withings auth...")
     print(f"If it doesn't open, visit:\n{auth_url}\n")
     webbrowser.open(auth_url)
 
@@ -225,4 +236,5 @@ def setup_auth():
     _save_json(WITHINGS_TOKENS_PATH, token_store)
     print(f"Tokens saved. User ID: {tokens.get('userid')}")
     print("\nSetup complete. Register with Claude Code:")
-    print(f"  claude mcp add -s user withings -- {sys.executable.replace('/bin/python', '/bin/withings-mcp')}")
+    command = sys.executable.replace("/bin/python", "/bin/withings-mcp")
+    print(f"  claude mcp add -s user withings -- {command}")

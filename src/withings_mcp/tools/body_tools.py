@@ -5,13 +5,17 @@ from datetime import datetime, timedelta, timezone
 
 import anyio
 
-from ..mcp_instance import mcp
-from ..helpers import (
-    format_response, require_auth, parse_date, parse_value,
-    resolve_measure_type, MEASURE_TYPES,
-)
 from .. import api, db
 from ..config import WITHINGS_MEASURE_URL
+from ..helpers import (
+    MEASURE_TYPES,
+    format_response,
+    parse_date,
+    parse_value,
+    require_auth,
+    resolve_measure_type,
+)
+from ..mcp_instance import mcp
 from .sync_tools import auto_sync_if_stale
 
 logger = logging.getLogger(__name__)
@@ -21,23 +25,29 @@ _BODY_MEASTYPES = ",".join(str(k) for k in MEASURE_TYPES.keys())
 
 def _fetch_live(start_date, end_date):
     """Fetch body measurements directly from the API."""
-    start_ts = int(datetime.combine(start_date, datetime.min.time(),
-                                     tzinfo=timezone.utc).timestamp())
-    end_ts = int(datetime.combine(end_date + timedelta(days=1),
-                                   datetime.min.time(),
-                                   tzinfo=timezone.utc).timestamp())
+    start_ts = int(
+        datetime.combine(start_date, datetime.min.time(), tzinfo=timezone.utc).timestamp()
+    )
+    end_ts = int(
+        datetime.combine(
+            end_date + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc
+        ).timestamp()
+    )
     results = []
     offset = 0
 
     while True:
-        body = api.post(WITHINGS_MEASURE_URL, {
-            "action": "getmeas",
-            "meastypes": _BODY_MEASTYPES,
-            "category": 1,
-            "startdate": start_ts,
-            "enddate": end_ts,
-            "offset": offset,
-        })
+        body = api.post(
+            WITHINGS_MEASURE_URL,
+            {
+                "action": "getmeas",
+                "meastypes": _BODY_MEASTYPES,
+                "category": 1,
+                "startdate": start_ts,
+                "enddate": end_ts,
+                "offset": offset,
+            },
+        )
 
         for grp in body.get("measuregrps", []):
             ts = grp.get("date", 0)
@@ -91,11 +101,13 @@ async def withings_get_body(
         entries = await anyio.to_thread.run_sync(lambda: _fetch_live(start, end))
     else:
         await anyio.to_thread.run_sync(lambda: auto_sync_if_stale("body"))
+
         def _query():
             conn = db.get_db()
             rows = db.query_body(conn, start.isoformat(), end.isoformat())
             conn.close()
             return rows
+
         entries = await anyio.to_thread.run_sync(_query)
 
     # Filter metrics if requested
@@ -105,9 +117,11 @@ async def withings_get_body(
         entries = [{k: v for k, v in e.items() if k in keep} for e in entries]
 
     if not entries:
-        return format_response({
-            "message": "No body measurements found for this period.",
-            "hint": "Try live=True to fetch directly from the API.",
-        })
+        return format_response(
+            {
+                "message": "No body measurements found for this period.",
+                "hint": "Try live=True to fetch directly from the API.",
+            }
+        )
 
     return format_response({"measurements": entries, "count": len(entries)})

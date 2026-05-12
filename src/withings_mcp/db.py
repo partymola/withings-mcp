@@ -179,8 +179,9 @@ def save_workout(conn: sqlite3.Connection, row: dict):
     )
 
 
-def log_sync(conn: sqlite3.Connection, data_type: str, status: str,
-             records_added: int = 0, notes: str = ""):
+def log_sync(
+    conn: sqlite3.Connection, data_type: str, status: str, records_added: int = 0, notes: str = ""
+):
     """Record a sync event."""
     conn.execute(
         """INSERT INTO sync_log (synced_at, data_type, status, records_added, notes)
@@ -234,8 +235,9 @@ def query_activities(conn: sqlite3.Connection, start_date: str, end_date: str) -
     return [dict(r) for r in rows]
 
 
-def query_workouts(conn: sqlite3.Connection, start_date: str, end_date: str,
-                   category: str | None = None) -> list[dict]:
+def query_workouts(
+    conn: sqlite3.Connection, start_date: str, end_date: str, category: str | None = None
+) -> list[dict]:
     """Query workouts within a date range, optionally filtered by category."""
     if category:
         rows = conn.execute(

@@ -42,17 +42,22 @@ def post(url: str, params: dict, retries: int = 2) -> dict:
     for attempt in range(retries):
         token = refresh_token()
         data = urlencode(params).encode()
-        req = urllib.request.Request(url, data=data, method="POST", headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/x-www-form-urlencoded",
-            "User-Agent": "withings-mcp/0.1",
-        })
+        req = urllib.request.Request(
+            url,
+            data=data,
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/x-www-form-urlencoded",
+                "User-Agent": "withings-mcp/0.1",
+            },
+        )
 
         try:
             with urllib.request.urlopen(req, timeout=15) as resp:
                 body = json.loads(resp.read().decode())
         except urllib.error.URLError as e:
-            raise WithingsAPIError(f"Network error. Check your connection.") from e
+            raise WithingsAPIError("Network error. Check your connection.") from e
 
         status = body.get("status")
 
@@ -63,6 +68,7 @@ def post(url: str, params: dict, retries: int = 2) -> dict:
             # Token expired - force refresh and retry
             logger.info("Token expired (401), refreshing")
             from . import auth
+
             auth._cached_tokens = None
             continue
 

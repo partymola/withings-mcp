@@ -23,21 +23,15 @@ class TestParseValue(unittest.TestCase):
 
     def test_negative_exponent(self):
         # 72500 * 10^-3 = 72.5
-        self.assertAlmostEqual(
-            parse_value({"value": 72500, "unit": -3}), 72.5, places=3
-        )
+        self.assertAlmostEqual(parse_value({"value": 72500, "unit": -3}), 72.5, places=3)
 
     def test_two_decimal_exponent(self):
         # 2015 * 10^-2 = 20.15
-        self.assertAlmostEqual(
-            parse_value({"value": 2015, "unit": -2}), 20.15, places=3
-        )
+        self.assertAlmostEqual(parse_value({"value": 2015, "unit": -2}), 20.15, places=3)
 
     def test_large_negative_exponent(self):
         # 700000 * 10^-4 = 70.0
-        self.assertAlmostEqual(
-            parse_value({"value": 700000, "unit": -4}), 70.0, places=3
-        )
+        self.assertAlmostEqual(parse_value({"value": 700000, "unit": -4}), 70.0, places=3)
 
     def test_positive_unit(self):
         # 5 * 10^1 = 50

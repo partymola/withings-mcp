@@ -1,22 +1,25 @@
 """Sync tool: fetch data from Withings API and store in local SQLite cache."""
 
 import logging
-import time
-from datetime import datetime, date, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import anyio
 
-from ..mcp_instance import mcp
-from ..helpers import (
-    format_response, require_auth, parse_value,
-    resolve_measure_type, resolve_workout_category,
-    MEASURE_TYPES,
-)
 from .. import api, db
 from ..config import (
-    WITHINGS_MEASURE_URL, WITHINGS_MEASURE_V2_URL,
+    WITHINGS_MEASURE_URL,
+    WITHINGS_MEASURE_V2_URL,
     WITHINGS_SLEEP_V2_URL,
 )
+from ..helpers import (
+    MEASURE_TYPES,
+    format_response,
+    parse_value,
+    require_auth,
+    resolve_measure_type,
+    resolve_workout_category,
+)
+from ..mcp_instance import mcp
 
 logger = logging.getLogger(__name__)
 
@@ -51,11 +54,14 @@ def run_sync(types: list[str], days: int = 30) -> dict:
             end_date = today
             start_ymd = start_date.isoformat()
             end_ymd = end_date.isoformat()
-            start_ts = int(datetime.combine(start_date, datetime.min.time(),
-                                             tzinfo=timezone.utc).timestamp())
-            end_ts = int(datetime.combine(end_date + timedelta(days=1),
-                                           datetime.min.time(),
-                                           tzinfo=timezone.utc).timestamp())
+            start_ts = int(
+                datetime.combine(start_date, datetime.min.time(), tzinfo=timezone.utc).timestamp()
+            )
+            end_ts = int(
+                datetime.combine(
+                    end_date + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc
+                ).timestamp()
+            )
 
             if dtype == "body":
                 count = _sync_body(conn, start_ts, end_ts)
@@ -70,7 +76,11 @@ def run_sync(types: list[str], days: int = 30) -> dict:
                 continue
 
             db.log_sync(conn, dtype, "ok", count)
-            results[dtype] = {"status": "ok", "records": count, "range": f"{start_ymd} to {end_ymd}"}
+            results[dtype] = {
+                "status": "ok",
+                "records": count,
+                "range": f"{start_ymd} to {end_ymd}",
+            }
 
         except api.WithingsRateLimitError:
             db.log_sync(conn, dtype, "partial", notes="rate limited")
@@ -103,6 +113,7 @@ def auto_sync_if_stale(data_type: str) -> None:
     except Exception:
         pass
 
+
 # Sleep summary fields to request
 _SLEEP_DATA_FIELDS = (
     "total_sleep_time,deepsleepduration,lightsleepduration,remsleepduration,"
@@ -117,9 +128,7 @@ _ACTIVITY_DATA_FIELDS = (
 )
 
 # Workout fields to request
-_WORKOUT_DATA_FIELDS = (
-    "calories,distance,steps,hr_average,hr_min,hr_max"
-)
+_WORKOUT_DATA_FIELDS = "calories,distance,steps,hr_average,hr_min,hr_max"
 
 
 def _sync_body(conn, start_ts: int, end_ts: int) -> int:
@@ -128,14 +137,17 @@ def _sync_body(conn, start_ts: int, end_ts: int) -> int:
     offset = 0
 
     while True:
-        body = api.post(WITHINGS_MEASURE_URL, {
-            "action": "getmeas",
-            "meastypes": _BODY_MEASTYPES,
-            "category": 1,
-            "startdate": start_ts,
-            "enddate": end_ts,
-            "offset": offset,
-        })
+        body = api.post(
+            WITHINGS_MEASURE_URL,
+            {
+                "action": "getmeas",
+                "meastypes": _BODY_MEASTYPES,
+                "category": 1,
+                "startdate": start_ts,
+                "enddate": end_ts,
+                "offset": offset,
+            },
+        )
 
         for grp in body.get("measuregrps", []):
             ts = grp.get("date", 0)
@@ -186,20 +198,27 @@ def _sync_sleep(conn, start_ymd: str, end_ymd: str) -> int:
     offset = 0
 
     while True:
-        body = api.post(WITHINGS_SLEEP_V2_URL, {
-            "action": "getsummary",
-            "startdateymd": start_ymd,
-            "enddateymd": end_ymd,
-            "data_fields": _SLEEP_DATA_FIELDS,
-            "offset": offset,
-        })
+        body = api.post(
+            WITHINGS_SLEEP_V2_URL,
+            {
+                "action": "getsummary",
+                "startdateymd": start_ymd,
+                "enddateymd": end_ymd,
+                "data_fields": _SLEEP_DATA_FIELDS,
+                "offset": offset,
+            },
+        )
 
         for entry in body.get("series", []):
             data = entry.get("data", {})
             start_ts = entry.get("startdate")
             end_ts = entry.get("enddate")
-            startdate = datetime.fromtimestamp(start_ts, tz=timezone.utc).isoformat() if start_ts else None
-            enddate = datetime.fromtimestamp(end_ts, tz=timezone.utc).isoformat() if end_ts else None
+            startdate = (
+                datetime.fromtimestamp(start_ts, tz=timezone.utc).isoformat() if start_ts else None
+            )
+            enddate = (
+                datetime.fromtimestamp(end_ts, tz=timezone.utc).isoformat() if end_ts else None
+            )
 
             row = {
                 "date": entry.get("date", ""),
@@ -240,13 +259,16 @@ def _sync_activity(conn, start_ymd: str, end_ymd: str) -> int:
     offset = 0
 
     while True:
-        body = api.post(WITHINGS_MEASURE_V2_URL, {
-            "action": "getactivity",
-            "startdateymd": start_ymd,
-            "enddateymd": end_ymd,
-            "data_fields": _ACTIVITY_DATA_FIELDS,
-            "offset": offset,
-        })
+        body = api.post(
+            WITHINGS_MEASURE_V2_URL,
+            {
+                "action": "getactivity",
+                "startdateymd": start_ymd,
+                "enddateymd": end_ymd,
+                "data_fields": _ACTIVITY_DATA_FIELDS,
+                "offset": offset,
+            },
+        )
 
         activities = body.get("activities", [])
         # Single-day quirk: might return an object instead of array
@@ -289,13 +311,16 @@ def _sync_workouts(conn, start_ymd: str, end_ymd: str) -> int:
     offset = 0
 
     while True:
-        body = api.post(WITHINGS_MEASURE_V2_URL, {
-            "action": "getworkouts",
-            "startdateymd": start_ymd,
-            "enddateymd": end_ymd,
-            "data_fields": _WORKOUT_DATA_FIELDS,
-            "offset": offset,
-        })
+        body = api.post(
+            WITHINGS_MEASURE_V2_URL,
+            {
+                "action": "getworkouts",
+                "startdateymd": start_ymd,
+                "enddateymd": end_ymd,
+                "data_fields": _WORKOUT_DATA_FIELDS,
+                "offset": offset,
+            },
+        )
 
         for entry in body.get("series", []):
             data = entry.get("data", {})

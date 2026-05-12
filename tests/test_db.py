@@ -3,21 +3,20 @@
 All tests use in-memory SQLite - no on-disk files created.
 """
 
-import sqlite3
 import unittest
 
 from withings_mcp.db import (
     get_db,
-    save_body_measurement,
-    save_sleep_summary,
-    save_activity,
-    save_workout,
-    log_sync,
     get_last_sync,
+    log_sync,
+    query_activities,
     query_body,
     query_sleep,
-    query_activities,
     query_workouts,
+    save_activity,
+    save_body_measurement,
+    save_sleep_summary,
+    save_workout,
 )
 
 
@@ -54,12 +53,22 @@ class TestSchema(unittest.TestCase):
 class TestBodyMeasurements(unittest.TestCase):
     def _make_row(self, grpid=1001, date="2026-01-15", weight=70.0, fat_pct=20.0):
         return {
-            "date": date, "measured_at": "2026-01-15T08:00:00+00:00",
-            "grpid": grpid, "weight_kg": weight, "fat_pct": fat_pct,
-            "fat_mass_kg": 14.0, "lean_mass_kg": 56.0, "muscle_mass_kg": 30.0,
-            "hydration_kg": 38.0, "bone_mass_kg": 3.0, "heart_rate": None,
-            "systolic_bp": None, "diastolic_bp": None, "spo2_pct": None,
-            "temperature_c": None, "visceral_fat_index": None,
+            "date": date,
+            "measured_at": "2026-01-15T08:00:00+00:00",
+            "grpid": grpid,
+            "weight_kg": weight,
+            "fat_pct": fat_pct,
+            "fat_mass_kg": 14.0,
+            "lean_mass_kg": 56.0,
+            "muscle_mass_kg": 30.0,
+            "hydration_kg": 38.0,
+            "bone_mass_kg": 3.0,
+            "heart_rate": None,
+            "systolic_bp": None,
+            "diastolic_bp": None,
+            "spo2_pct": None,
+            "temperature_c": None,
+            "visceral_fat_index": None,
             "basal_metabolic_rate": None,
         }
 
@@ -93,15 +102,25 @@ class TestBodyMeasurements(unittest.TestCase):
 class TestSleepSummaries(unittest.TestCase):
     def _make_row(self, date="2026-01-15", device="32"):
         return {
-            "date": date, "startdate": "2026-01-14T23:00:00+00:00",
+            "date": date,
+            "startdate": "2026-01-14T23:00:00+00:00",
             "enddate": "2026-01-15T07:00:00+00:00",
-            "total_sleep_sec": 28800, "deep_sleep_sec": 3600,
-            "light_sleep_sec": 14400, "rem_sleep_sec": 7200,
-            "awake_sec": 3600, "wakeup_count": 2,
-            "hr_average": 58, "hr_min": 48, "hr_max": 72,
-            "rr_average": 15, "rr_min": 12, "rr_max": 19,
-            "sleep_score": 78, "snoring_sec": 600,
-            "apnea_hypopnea_index": None, "device_model": device,
+            "total_sleep_sec": 28800,
+            "deep_sleep_sec": 3600,
+            "light_sleep_sec": 14400,
+            "rem_sleep_sec": 7200,
+            "awake_sec": 3600,
+            "wakeup_count": 2,
+            "hr_average": 58,
+            "hr_min": 48,
+            "hr_max": 72,
+            "rr_average": 15,
+            "rr_min": 12,
+            "rr_max": 19,
+            "sleep_score": 78,
+            "snoring_sec": 600,
+            "apnea_hypopnea_index": None,
+            "device_model": device,
         }
 
     def test_insert_and_retrieve(self):
@@ -132,12 +151,21 @@ class TestSleepSummaries(unittest.TestCase):
 class TestActivities(unittest.TestCase):
     def _make_row(self, date="2026-01-15"):
         return {
-            "date": date, "steps": 8000, "distance_m": 6000,
-            "active_calories": 250, "total_calories": 1850,
-            "soft_sec": 5400, "moderate_sec": 1800, "intense_sec": 600,
-            "hr_average": 72, "hr_min": 55, "hr_max": 145,
-            "hr_zone_0_sec": 3600, "hr_zone_1_sec": 1800,
-            "hr_zone_2_sec": 600, "hr_zone_3_sec": 120,
+            "date": date,
+            "steps": 8000,
+            "distance_m": 6000,
+            "active_calories": 250,
+            "total_calories": 1850,
+            "soft_sec": 5400,
+            "moderate_sec": 1800,
+            "intense_sec": 600,
+            "hr_average": 72,
+            "hr_min": 55,
+            "hr_max": 145,
+            "hr_zone_0_sec": 3600,
+            "hr_zone_1_sec": 1800,
+            "hr_zone_2_sec": 600,
+            "hr_zone_3_sec": 120,
         }
 
     def test_insert_and_retrieve(self):
@@ -160,12 +188,18 @@ class TestActivities(unittest.TestCase):
 class TestWorkouts(unittest.TestCase):
     def _make_row(self, startdate="2026-01-15T10:00:00+00:00", category=6):
         return {
-            "date": "2026-01-15", "startdate": startdate,
+            "date": "2026-01-15",
+            "startdate": startdate,
             "enddate": "2026-01-15T11:00:00+00:00",
-            "category": category, "category_name": "cycling",
-            "duration_sec": 3600, "calories": 350,
-            "distance_m": 15000, "steps": 0,
-            "hr_average": 135, "hr_min": 95, "hr_max": 170,
+            "category": category,
+            "category_name": "cycling",
+            "duration_sec": 3600,
+            "calories": 350,
+            "distance_m": 15000,
+            "steps": 0,
+            "hr_average": 135,
+            "hr_min": 95,
+            "hr_max": 170,
         }
 
     def test_insert_and_retrieve(self):
@@ -187,14 +221,10 @@ class TestWorkouts(unittest.TestCase):
     def test_category_filter(self):
         conn = _get_test_db()
         save_workout(conn, self._make_row(category=6))
-        save_workout(conn, self._make_row(
-            startdate="2026-01-16T10:00:00+00:00", category=2
-        ))
+        save_workout(conn, self._make_row(startdate="2026-01-16T10:00:00+00:00", category=2))
         conn.commit()
         # Fix: second workout needs different category_name
-        conn.execute(
-            "UPDATE workouts SET category_name='run' WHERE category=2"
-        )
+        conn.execute("UPDATE workouts SET category_name='run' WHERE category=2")
         conn.commit()
         rows = query_workouts(conn, "2026-01-01", "2026-01-31", category="cycling")
         self.assertEqual(len(rows), 1)
