@@ -17,18 +17,21 @@ logging.basicConfig(
 
 # Import MCP instance and register all tools
 from withings_mcp.mcp_instance import mcp  # noqa: E402
-from withings_mcp.tools import sync_tools  # noqa: E402, F401
-from withings_mcp.tools import body_tools  # noqa: E402, F401
-from withings_mcp.tools import sleep_tools  # noqa: E402, F401
-from withings_mcp.tools import activity_tools  # noqa: E402, F401
-from withings_mcp.tools import heart_tools  # noqa: E402, F401
-from withings_mcp.tools import device_tools  # noqa: E402, F401
-from withings_mcp.tools import analysis_tools  # noqa: E402, F401
+from withings_mcp.tools import (
+    activity_tools,  # noqa: E402, F401
+    analysis_tools,  # noqa: E402, F401
+    body_tools,  # noqa: E402, F401
+    device_tools,  # noqa: E402, F401
+    heart_tools,  # noqa: E402, F401
+    sleep_tools,  # noqa: E402, F401
+    sync_tools,  # noqa: E402, F401
+)
 
 
 def main():
     if len(sys.argv) > 1 and sys.argv[1] == "auth":
         from withings_mcp.auth import setup_auth
+
         setup_auth()
     else:
         mcp.run(transport="stdio")

@@ -1,13 +1,19 @@
 """Tests for trend analysis: aggregation, comparison, sparse data."""
 
-import sqlite3
 import unittest
 
 from withings_mcp.db import (
-    get_db, save_body_measurement, save_sleep_summary, save_activity,
+    get_db,
+    save_activity,
+    save_body_measurement,
+    save_sleep_summary,
 )
 from withings_mcp.tools.analysis_tools import (
-    _trend_body, _trend_sleep, _trend_activity, _compare_periods, _get_period_key,
+    _compare_periods,
+    _get_period_key,
+    _trend_activity,
+    _trend_body,
+    _trend_sleep,
 )
 
 
@@ -17,38 +23,67 @@ def _get_test_db():
 
 def _body_row(date, grpid, weight=70.0, fat_pct=20.0, muscle=30.0):
     return {
-        "date": date, "measured_at": f"{date}T08:00:00+00:00",
-        "grpid": grpid, "weight_kg": weight, "fat_pct": fat_pct,
-        "fat_mass_kg": weight * fat_pct / 100, "lean_mass_kg": None,
-        "muscle_mass_kg": muscle, "hydration_kg": None, "bone_mass_kg": None,
-        "heart_rate": None, "systolic_bp": None, "diastolic_bp": None,
-        "spo2_pct": None, "temperature_c": None, "visceral_fat_index": None,
+        "date": date,
+        "measured_at": f"{date}T08:00:00+00:00",
+        "grpid": grpid,
+        "weight_kg": weight,
+        "fat_pct": fat_pct,
+        "fat_mass_kg": weight * fat_pct / 100,
+        "lean_mass_kg": None,
+        "muscle_mass_kg": muscle,
+        "hydration_kg": None,
+        "bone_mass_kg": None,
+        "heart_rate": None,
+        "systolic_bp": None,
+        "diastolic_bp": None,
+        "spo2_pct": None,
+        "temperature_c": None,
+        "visceral_fat_index": None,
         "basal_metabolic_rate": None,
     }
 
 
 def _sleep_row(date, device="32", total=28800, score=78):
     return {
-        "date": date, "startdate": f"{date}T23:00:00+00:00",
+        "date": date,
+        "startdate": f"{date}T23:00:00+00:00",
         "enddate": f"{date}T07:00:00+00:00",
-        "total_sleep_sec": total, "deep_sleep_sec": 3600,
-        "light_sleep_sec": 14400, "rem_sleep_sec": 7200,
-        "awake_sec": 3600, "wakeup_count": 2,
-        "hr_average": 58, "hr_min": 48, "hr_max": 72,
-        "rr_average": 15, "rr_min": 12, "rr_max": 19,
-        "sleep_score": score, "snoring_sec": 600,
-        "apnea_hypopnea_index": None, "device_model": device,
+        "total_sleep_sec": total,
+        "deep_sleep_sec": 3600,
+        "light_sleep_sec": 14400,
+        "rem_sleep_sec": 7200,
+        "awake_sec": 3600,
+        "wakeup_count": 2,
+        "hr_average": 58,
+        "hr_min": 48,
+        "hr_max": 72,
+        "rr_average": 15,
+        "rr_min": 12,
+        "rr_max": 19,
+        "sleep_score": score,
+        "snoring_sec": 600,
+        "apnea_hypopnea_index": None,
+        "device_model": device,
     }
 
 
 def _activity_row(date, steps=8000, distance=6000):
     return {
-        "date": date, "steps": steps, "distance_m": distance,
-        "active_calories": 250, "total_calories": 1850,
-        "soft_sec": 5400, "moderate_sec": 1800, "intense_sec": 600,
-        "hr_average": 72, "hr_min": 55, "hr_max": 145,
-        "hr_zone_0_sec": 3600, "hr_zone_1_sec": 1800,
-        "hr_zone_2_sec": 600, "hr_zone_3_sec": 120,
+        "date": date,
+        "steps": steps,
+        "distance_m": distance,
+        "active_calories": 250,
+        "total_calories": 1850,
+        "soft_sec": 5400,
+        "moderate_sec": 1800,
+        "intense_sec": 600,
+        "hr_average": 72,
+        "hr_min": 55,
+        "hr_max": 145,
+        "hr_zone_0_sec": 3600,
+        "hr_zone_1_sec": 1800,
+        "hr_zone_2_sec": 600,
+        "hr_zone_3_sec": 120,
     }
 
 
@@ -70,11 +105,15 @@ class TestBodyTrends(unittest.TestCase):
     def test_monthly_averages(self):
         conn = _get_test_db()
         # Jan: 70, 71 -> avg 70.5. Feb: 69, 70 -> avg 69.5. Mar: 68.
-        for i, (d, w) in enumerate([
-            ("2026-01-05", 70.0), ("2026-01-20", 71.0),
-            ("2026-02-05", 69.0), ("2026-02-20", 70.0),
-            ("2026-03-10", 68.0),
-        ]):
+        for i, (d, w) in enumerate(
+            [
+                ("2026-01-05", 70.0),
+                ("2026-01-20", 71.0),
+                ("2026-02-05", 69.0),
+                ("2026-02-20", 70.0),
+                ("2026-03-10", 68.0),
+            ]
+        ):
             save_body_measurement(conn, _body_row(d, grpid=2000 + i, weight=w))
         conn.commit()
 

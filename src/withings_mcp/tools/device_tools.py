@@ -5,10 +5,10 @@ from datetime import datetime, timezone
 
 import anyio
 
-from ..mcp_instance import mcp
-from ..helpers import format_response, require_auth
 from .. import api
 from ..config import WITHINGS_USER_V2_URL
+from ..helpers import format_response, require_auth
+from ..mcp_instance import mcp
 
 logger = logging.getLogger(__name__)
 
@@ -21,17 +21,19 @@ def _fetch_devices():
     for d in body.get("devices", []):
         last_session = d.get("last_session_date")
         if last_session:
-            last_session = datetime.fromtimestamp(
-                last_session, tz=timezone.utc
-            ).strftime("%Y-%m-%d %H:%M")
+            last_session = datetime.fromtimestamp(last_session, tz=timezone.utc).strftime(
+                "%Y-%m-%d %H:%M"
+            )
 
-        devices.append({
-            "type": d.get("type", ""),
-            "model": d.get("model", ""),
-            "battery": d.get("battery", ""),
-            "last_session": last_session,
-            "timezone": d.get("timezone", ""),
-        })
+        devices.append(
+            {
+                "type": d.get("type", ""),
+                "model": d.get("model", ""),
+                "battery": d.get("battery", ""),
+                "last_session": last_session,
+                "timezone": d.get("timezone", ""),
+            }
+        )
 
     return devices
 
@@ -49,9 +51,11 @@ async def withings_get_devices() -> str:
     devices = await anyio.to_thread.run_sync(_fetch_devices)
 
     if not devices:
-        return format_response({
-            "message": "No connected devices found.",
-            "hint": "Ensure devices are registered in the Withings app.",
-        })
+        return format_response(
+            {
+                "message": "No connected devices found.",
+                "hint": "Ensure devices are registered in the Withings app.",
+            }
+        )
 
     return format_response({"devices": devices, "count": len(devices)})

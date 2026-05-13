@@ -2,17 +2,15 @@
 
 import json
 import unittest
-from unittest.mock import patch, MagicMock
-from io import BytesIO
+from unittest.mock import MagicMock, patch
 
+from tests.fixtures import fake_api_response
 from withings_mcp.api import (
     WithingsAPIError,
     WithingsAuthError,
     WithingsRateLimitError,
     post,
 )
-
-from tests.fixtures import fake_api_response
 
 
 def _mock_urlopen(response_dict):
@@ -29,18 +27,14 @@ class TestApiPost(unittest.TestCase):
     @patch("withings_mcp.api.urllib.request.urlopen")
     def test_success_returns_body(self, mock_urlopen, mock_refresh):
         body_data = {"measuregrps": []}
-        mock_urlopen.return_value = _mock_urlopen(
-            fake_api_response(status=0, body=body_data)
-        )
+        mock_urlopen.return_value = _mock_urlopen(fake_api_response(status=0, body=body_data))
         result = post("https://example.com", {"action": "getmeas"})
         self.assertEqual(result, body_data)
 
     @patch("withings_mcp.api.refresh_token", return_value="fake_token")
     @patch("withings_mcp.api.urllib.request.urlopen")
     def test_401_raises_auth_error(self, mock_urlopen, mock_refresh):
-        mock_urlopen.return_value = _mock_urlopen(
-            fake_api_response(status=401)
-        )
+        mock_urlopen.return_value = _mock_urlopen(fake_api_response(status=401))
         with self.assertRaises(WithingsAuthError) as ctx:
             post("https://example.com", {"action": "getmeas"})
         self.assertIn("withings-mcp auth", str(ctx.exception))
@@ -48,9 +42,7 @@ class TestApiPost(unittest.TestCase):
     @patch("withings_mcp.api.refresh_token", return_value="fake_token")
     @patch("withings_mcp.api.urllib.request.urlopen")
     def test_601_raises_rate_limit(self, mock_urlopen, mock_refresh):
-        mock_urlopen.return_value = _mock_urlopen(
-            fake_api_response(status=601)
-        )
+        mock_urlopen.return_value = _mock_urlopen(fake_api_response(status=601))
         with self.assertRaises(WithingsRateLimitError) as ctx:
             post("https://example.com", {"action": "getmeas"}, retries=1)
         self.assertIn("60 seconds", str(ctx.exception))
@@ -58,18 +50,14 @@ class TestApiPost(unittest.TestCase):
     @patch("withings_mcp.api.refresh_token", return_value="fake_token")
     @patch("withings_mcp.api.urllib.request.urlopen")
     def test_602_raises_rate_limit(self, mock_urlopen, mock_refresh):
-        mock_urlopen.return_value = _mock_urlopen(
-            fake_api_response(status=602)
-        )
+        mock_urlopen.return_value = _mock_urlopen(fake_api_response(status=602))
         with self.assertRaises(WithingsRateLimitError):
             post("https://example.com", {"action": "getmeas"}, retries=1)
 
     @patch("withings_mcp.api.refresh_token", return_value="fake_token")
     @patch("withings_mcp.api.urllib.request.urlopen")
     def test_unknown_status_raises_api_error(self, mock_urlopen, mock_refresh):
-        mock_urlopen.return_value = _mock_urlopen(
-            fake_api_response(status=2555)
-        )
+        mock_urlopen.return_value = _mock_urlopen(fake_api_response(status=2555))
         with self.assertRaises(WithingsAPIError) as ctx:
             post("https://example.com", {"action": "getmeas"}, retries=1)
         self.assertIn("2555", str(ctx.exception))
@@ -78,6 +66,7 @@ class TestApiPost(unittest.TestCase):
     @patch("withings_mcp.api.urllib.request.urlopen")
     def test_network_error_raises_api_error(self, mock_urlopen, mock_refresh):
         import urllib.error
+
         mock_urlopen.side_effect = urllib.error.URLError("Connection refused")
         with self.assertRaises(WithingsAPIError):
             post("https://example.com", {"action": "getmeas"})
@@ -106,9 +95,7 @@ class TestApiPost(unittest.TestCase):
     @patch("withings_mcp.api.refresh_token", return_value="fake_token")
     @patch("withings_mcp.api.urllib.request.urlopen")
     def test_success_returns_empty_body(self, mock_urlopen, mock_refresh):
-        mock_urlopen.return_value = _mock_urlopen(
-            {"status": 0}
-        )
+        mock_urlopen.return_value = _mock_urlopen({"status": 0})
         result = post("https://example.com", {"action": "getdevice"})
         self.assertEqual(result, {})
 

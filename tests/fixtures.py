@@ -4,13 +4,11 @@ ALL test data in this project MUST come from this module.
 Values are obviously fictional round numbers - never use real health data.
 """
 
-import math
-
 
 def _encode_value(value, decimals=1):
     """Encode a float as Withings value + unit (value * 10^unit)."""
     unit = -decimals
-    encoded = round(value * (10 ** decimals))
+    encoded = round(value * (10**decimals))
     return {"value": encoded, "type": 0, "unit": unit}
 
 

@@ -7,9 +7,9 @@ from datetime import date, timedelta
 
 import anyio
 
-from ..mcp_instance import mcp
-from ..helpers import format_response, require_auth, parse_date, format_duration
 from .. import db
+from ..helpers import format_duration, format_response, parse_date, require_auth
+from ..mcp_instance import mcp
 from .sync_tools import auto_sync_if_stale
 
 logger = logging.getLogger(__name__)
@@ -39,10 +39,21 @@ def _trend_body(conn, start_date: str, end_date: str, period: str) -> dict:
     """Compute body composition trends."""
     rows = db.query_body(conn, start_date, end_date)
     if not rows:
-        return {"message": "No body data in cache for this period. Try live=True on the get_* tools to fetch directly from the API."}
+        return {
+            "message": (
+                "No body data in cache for this period. Try live=True on the "
+                "get_* tools to fetch directly from the API."
+            )
+        }
 
-    fields = ["weight_kg", "fat_pct", "fat_mass_kg", "muscle_mass_kg",
-              "bone_mass_kg", "hydration_kg"]
+    fields = [
+        "weight_kg",
+        "fat_pct",
+        "fat_mass_kg",
+        "muscle_mass_kg",
+        "bone_mass_kg",
+        "hydration_kg",
+    ]
     buckets = defaultdict(lambda: defaultdict(list))
 
     for r in rows:
@@ -66,10 +77,22 @@ def _trend_sleep(conn, start_date: str, end_date: str, period: str) -> dict:
     """Compute sleep trends."""
     rows = db.query_sleep(conn, start_date, end_date)
     if not rows:
-        return {"message": "No sleep data in cache for this period. Try live=True on the get_* tools to fetch directly from the API."}
+        return {
+            "message": (
+                "No sleep data in cache for this period. Try live=True on the "
+                "get_* tools to fetch directly from the API."
+            )
+        }
 
-    fields = ["total_sleep_sec", "deep_sleep_sec", "light_sleep_sec",
-              "rem_sleep_sec", "sleep_score", "hr_average", "rr_average"]
+    fields = [
+        "total_sleep_sec",
+        "deep_sleep_sec",
+        "light_sleep_sec",
+        "rem_sleep_sec",
+        "sleep_score",
+        "hr_average",
+        "rr_average",
+    ]
     buckets = defaultdict(lambda: defaultdict(list))
 
     for r in rows:
@@ -101,7 +124,12 @@ def _trend_activity(conn, start_date: str, end_date: str, period: str) -> dict:
     """Compute activity trends."""
     rows = db.query_activities(conn, start_date, end_date)
     if not rows:
-        return {"message": "No activity data in cache for this period. Try live=True on the get_* tools to fetch directly from the API."}
+        return {
+            "message": (
+                "No activity data in cache for this period. Try live=True on the "
+                "get_* tools to fetch directly from the API."
+            )
+        }
 
     fields = ["steps", "distance_m", "active_calories", "total_calories"]
     buckets = defaultdict(lambda: defaultdict(list))
@@ -120,7 +148,9 @@ def _trend_activity(conn, start_date: str, end_date: str, period: str) -> dict:
             "period": key,
             "days": len(b.get("steps", [])),
             "avg_steps": _avg(b.get("steps", [])),
-            "total_distance_km": round(sum(b.get("distance_m", [])) / 1000, 1) if b.get("distance_m") else None,
+            "total_distance_km": round(sum(b.get("distance_m", [])) / 1000, 1)
+            if b.get("distance_m")
+            else None,
             "avg_active_calories": _avg(b.get("active_calories", [])),
         }
         periods.append(entry)
@@ -133,7 +163,11 @@ def _compare_periods(conn, data_type: str, compare_str: str) -> dict:
     # Parse the comparison string
     parts = re.split(r"\s+vs\s+", compare_str.strip(), maxsplit=1)
     if len(parts) != 2:
-        return {"error": "Invalid compare format. Use: 'last_30d vs previous_30d' or '2026-03 vs 2026-02'"}
+        return {
+            "error": (
+                "Invalid compare format. Use: 'last_30d vs previous_30d' or '2026-03 vs 2026-02'"
+            )
+        }
 
     today = date.today()
     ranges = []
@@ -169,12 +203,20 @@ def _compare_periods(conn, data_type: str, compare_str: str) -> dict:
                 end = date(year, end_month + 1, 1) - timedelta(days=1)
             ranges.append((start, end))
             continue
-        return {"error": f"Cannot parse period '{part}'. Use: last_30d, previous_30d, 2026-03, or 2026-Q1"}
+        return {
+            "error": (
+                f"Cannot parse period '{part}'. Use: last_30d, previous_30d, 2026-03, or 2026-Q1"
+            )
+        }
 
     if len(ranges) != 2:
         return {"error": "Need exactly two periods to compare."}
 
-    query_fn = {"body": db.query_body, "sleep": db.query_sleep, "activity": db.query_activities}.get(data_type)
+    query_fn = {
+        "body": db.query_body,
+        "sleep": db.query_sleep,
+        "activity": db.query_activities,
+    }.get(data_type)
     if not query_fn:
         return {"error": f"Cannot compare data_type '{data_type}'. Use: body, sleep, or activity."}
 
@@ -239,6 +281,7 @@ async def withings_trends(
     For activity: steps, distance, calorie trends.
     Not for raw data -- use withings_get_body/sleep/activity instead.
     """
+
     def _analyse():
         auto_sync_if_stale(data_type)
         conn = db.get_db()
@@ -256,7 +299,9 @@ async def withings_trends(
             elif data_type == "activity":
                 result = _trend_activity(conn, s, e, period)
             else:
-                result = {"error": f"Unknown data_type '{data_type}'. Use: body, sleep, or activity."}
+                result = {
+                    "error": f"Unknown data_type '{data_type}'. Use: body, sleep, or activity."
+                }
 
         conn.close()
         return result
