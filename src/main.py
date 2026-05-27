@@ -1,12 +1,15 @@
 """Withings MCP server entry point.
 
 Usage:
-    withings-mcp          Start the MCP server (stdio transport)
-    withings-mcp auth     Interactive OAuth setup
+    withings-mcp              Start the MCP server (stdio transport)
+    withings-mcp --version    Print the installed package version
+    withings-mcp auth         Interactive OAuth setup
 """
 
+import argparse
 import logging
 import sys
+from importlib.metadata import version
 
 # Configure logging to stderr (stdout is reserved for JSON-RPC on stdio)
 logging.basicConfig(
@@ -28,8 +31,32 @@ from withings_mcp.tools import (
 )
 
 
+def _version_text():
+    return f"withings-mcp {version('withings-mcp')}"
+
+
+def _add_version_argument(parser):
+    parser.add_argument("--version", action="version", version=_version_text())
+
+
 def main():
-    if len(sys.argv) > 1 and sys.argv[1] == "auth":
+    if len(sys.argv) == 1:
+        mcp.run(transport="stdio")
+        return
+
+    parser = argparse.ArgumentParser(
+        prog="withings-mcp",
+        description="Withings MCP server - serves Withings health data via MCP.",
+    )
+    _add_version_argument(parser)
+    subparsers = parser.add_subparsers(dest="cmd", metavar="COMMAND")
+
+    auth_parser = subparsers.add_parser("auth", help="Interactive OAuth setup")
+    _add_version_argument(auth_parser)
+
+    args = parser.parse_args()
+
+    if args.cmd == "auth":
         from withings_mcp.auth import setup_auth
 
         setup_auth()
