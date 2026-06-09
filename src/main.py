@@ -4,6 +4,7 @@ Usage:
     withings-mcp              Start the MCP server (stdio transport)
     withings-mcp --version    Print the installed package version
     withings-mcp auth         Interactive OAuth setup
+    withings-mcp sync         Sync data to local cache
 """
 
 import argparse
@@ -54,12 +55,44 @@ def main():
     auth_parser = subparsers.add_parser("auth", help="Interactive OAuth setup")
     _add_version_argument(auth_parser)
 
+    sync_parser = subparsers.add_parser("sync", help="Sync Withings data to local SQLite cache")
+    _add_version_argument(sync_parser)
+    sync_parser.add_argument(
+        "--days", type=int, default=30, help="Days of history for first sync (default: 30)"
+    )
+    sync_parser.add_argument(
+        "--types",
+        default="all",
+        help="Comma-separated data types: all, body, sleep, activity, workouts",
+    )
+
     args = parser.parse_args()
 
     if args.cmd == "auth":
         from withings_mcp.auth import setup_auth
 
         setup_auth()
+    elif args.cmd == "sync":
+        types = [t.strip() for t in args.types.split(",")]
+        if "all" in types:
+            types = ["body", "sleep", "activity", "workouts"]
+
+        print(f"Syncing: {', '.join(types)}")
+        results = sync_tools.run_sync(types, args.days)
+        for dtype, result in results.items():
+            status = result.get("status", "?")
+            if status == "ok":
+                print(f"  {dtype}: {result.get('records', 0)} records ({result.get('range', '')})")
+            else:
+                print(f"  {dtype}: {status} - {result.get('message', '')}")
+
+        # Exit non-zero if any type failed in a way that needs attention, so a
+        # cron/systemd wrapper marks the run failed. rate_limited is transient
+        # and self-heals on the next run, so it is not treated as a failure.
+        failed = [d for d, r in results.items() if r.get("status") in ("auth_error", "error")]
+        if failed:
+            print(f"Sync failed for: {', '.join(failed)}", file=sys.stderr)
+            sys.exit(1)
     else:
         mcp.run(transport="stdio")
 

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-09
+
+### Added
+
+- `withings-mcp sync` CLI subcommand (with `--types` and `--days` flags) for parity with fitbit-mcp; previously a sync could only be triggered through an MCP client. `--types all` expands to `body,sleep,activity,workouts`, and each data type gets a summary line (status, record count, date range).
+- `withings-mcp --version` prints the installed package version.
+- Continuous integration now runs the test suite on Python 3.14 in addition to 3.13.
+
 ## [0.1.0] - 2026-04-26
 
 ### Added
@@ -20,5 +28,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ECG and AFib detection support via `withings_get_heart` (live, not cached).
 - Pre-commit hook (`scripts/check-no-data.sh`) blocking commit of databases, tokens, and other secrets.
 
-[Unreleased]: https://github.com/partymola/withings-mcp/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/partymola/withings-mcp/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/partymola/withings-mcp/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/partymola/withings-mcp/releases/tag/v0.1.0

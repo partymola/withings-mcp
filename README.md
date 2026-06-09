@@ -72,6 +72,14 @@ In Claude Code, say: "Sync my Withings data"
 
 This runs `withings_sync` to populate the local cache. Subsequent syncs only fetch new data.
 
+You can also sync from the command line without an MCP client:
+
+```bash
+.venv/bin/withings-mcp sync                      # all data types, last 30 days
+.venv/bin/withings-mcp sync --types body,sleep   # a subset
+.venv/bin/withings-mcp sync --days 90            # deeper history on first sync
+```
+
 ## Configuration
 
 | Environment Variable | Default | Description |
