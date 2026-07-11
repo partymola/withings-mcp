@@ -33,6 +33,7 @@ dev = [
 withings-mcp = "main:main"
 
 [project.urls]
+Homepage = "https://github.com/partymola/withings-mcp"
 Repository = "https://github.com/partymola/withings-mcp"
 Issues = "https://github.com/partymola/withings-mcp/issues"
 
