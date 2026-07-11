@@ -22,8 +22,15 @@ def fake_measure_group(
     muscle_mass=30.0,
     hydration=38.0,
     bone_mass=3.0,
+    temperature=None,
+    body_temperature=None,
 ):
-    """Return a Withings API-shaped measuregrp dict."""
+    """Return a Withings API-shaped measuregrp dict.
+
+    ``temperature`` populates measure type 12 (temperature_c) and
+    ``body_temperature`` populates type 71 (body_temperature_c); both default
+    to absent so callers opt in per test.
+    """
     measures = []
     if weight is not None:
         m = _encode_value(weight, 3)
@@ -48,6 +55,14 @@ def fake_measure_group(
     if bone_mass is not None:
         m = _encode_value(bone_mass, 3)
         m["type"] = 88
+        measures.append(m)
+    if temperature is not None:
+        m = _encode_value(temperature, 1)
+        m["type"] = 12
+        measures.append(m)
+    if body_temperature is not None:
+        m = _encode_value(body_temperature, 1)
+        m["type"] = 71
         measures.append(m)
 
     return {
