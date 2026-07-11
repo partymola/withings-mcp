@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-07-11
+
+### Packaging
+
+- Listed in the official MCP registry (`io.github.partymola/withings-mcp`); the release workflow now publishes to the registry alongside PyPI.
+
 ## [0.2.1] - 2026-07-11
 
 ### Packaging
@@ -34,7 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ECG and AFib detection support via `withings_get_heart` (live, not cached).
 - Pre-commit hook (`scripts/check-no-data.sh`) blocking commit of databases, tokens, and other secrets.
 
-[Unreleased]: https://github.com/partymola/withings-mcp/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/partymola/withings-mcp/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/partymola/withings-mcp/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/partymola/withings-mcp/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/partymola/withings-mcp/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/partymola/withings-mcp/releases/tag/v0.1.0
