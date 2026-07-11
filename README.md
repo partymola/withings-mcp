@@ -10,23 +10,25 @@ MCP server for the [Withings Health API](https://developer.withings.com/) with O
 **What makes this different from other Withings MCP servers:**
 - Local SQLite cache for fast offline queries and historical trend analysis
 - Incremental sync - only fetches new data since last sync
-- All 200+ Withings measurement types supported (body comp, sleep, activity, workouts, ECG)
+- Broad Withings coverage: 17 body-composition metrics plus sleep, daily activity, workouts, and ECG/AFib
 - Automatic OAuth token refresh (access tokens: 3h, refresh tokens: 1 year)
 - Zero dependencies beyond `mcp` (HTTP via stdlib)
 - Python 3.13+
 
 ## Tools
 
-| Tool | Description |
-|------|-------------|
-| `withings_sync` | Sync data from Withings API to local cache |
-| `withings_get_body` | Body composition (weight, fat%, muscle, bone, BP, SpO2) |
-| `withings_get_sleep` | Sleep summaries or detailed phase time-series |
-| `withings_get_activity` | Daily steps, distance, calories, active time |
-| `withings_get_workouts` | Workout sessions with type, duration, HR |
-| `withings_get_heart` | ECG recordings and AFib detection |
-| `withings_get_devices` | Connected devices with battery status |
-| `withings_trends` | Period averages, weekly/monthly/quarterly trends, comparisons |
+| Tool | Description | Data source |
+|------|-------------|-------------|
+| `withings_sync` | Sync data from Withings API to local cache | Live API -> SQLite |
+| `withings_get_body` | Body composition (weight, fat%, muscle, bone, BP, SpO2) | Local cache (auto-syncs if stale) |
+| `withings_get_sleep` | Sleep summaries, or detailed phase time-series with `detail=True` | Cache (summary) / live (detail) |
+| `withings_get_activity` | Daily steps, distance, calories, active time | Local cache (auto-syncs if stale) |
+| `withings_get_workouts` | Workout sessions with type, duration, HR | Local cache (auto-syncs if stale) |
+| `withings_get_heart` | ECG recordings and AFib detection | Live API (always) |
+| `withings_get_devices` | Connected devices with battery status | Live API (always) |
+| `withings_trends` | Period averages, weekly/monthly/quarterly trends, comparisons | Local cache (auto-syncs if stale) |
+
+The cache-backed query tools auto-sync when their data is stale, and accept `live=True` to bypass the cache and fetch straight from the Withings API. `withings_get_heart` and `withings_get_devices` are always live. `withings_get_sleep(detail=True)` returns minute-by-minute sleep phases (live, up to 7 days per request).
 
 ## Prerequisites
 
@@ -80,6 +82,15 @@ You can also sync from the command line without an MCP client:
 .venv/bin/withings-mcp sync --days 90            # deeper history on first sync
 ```
 
+## CLI
+
+```
+withings-mcp              Start the MCP server (stdio transport)
+withings-mcp auth         Interactive OAuth setup (opens the browser)
+withings-mcp sync         Sync data to the local cache (--types, --days)
+withings-mcp --version    Print the installed package version
+```
+
 ## Configuration
 
 | Environment Variable | Default | Description |
@@ -103,7 +114,7 @@ You can also sync from the command line without an MCP client:
 # Install with dev dependencies
 uv pip install -e . && uv pip install pytest
 
-# Run tests (74 tests, all use in-memory SQLite with fictional data)
+# Run tests (all use in-memory SQLite with fictional data)
 .venv/bin/python -m pytest tests/ -v
 ```
 
@@ -113,7 +124,7 @@ uv pip install -e . && uv pip install pytest
 - **Local storage**: Health data stays in your local SQLite database
 - **Token storage**: OAuth tokens stored in `config/` (gitignored, file permissions 0600)
 - **Error messages**: Never contain health data values - only status codes
-- **Pre-commit hook**: Rejects database files and credentials from commits
+- **Pre-commit hook**: An optional hook (`scripts/check-no-data.sh`) blocks database files and credentials from commits - install it with the one-liner in [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ## Contributing
 
