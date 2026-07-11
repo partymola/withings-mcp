@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-11
+
+### Packaging
+
+- Published to PyPI (`pip install withings-mcp` / `uvx withings-mcp`) via GitHub Actions Trusted Publishing.
+
 ## [0.2.0] - 2026-06-09
 
 ### Added
@@ -28,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ECG and AFib detection support via `withings_get_heart` (live, not cached).
 - Pre-commit hook (`scripts/check-no-data.sh`) blocking commit of databases, tokens, and other secrets.
 
-[Unreleased]: https://github.com/partymola/withings-mcp/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/partymola/withings-mcp/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/partymola/withings-mcp/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/partymola/withings-mcp/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/partymola/withings-mcp/releases/tag/v0.1.0

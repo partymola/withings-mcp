@@ -39,6 +39,12 @@ The cache-backed query tools auto-sync when their data is stale, and accept `liv
 ## Installation
 
 ```bash
+pip install withings-mcp
+```
+
+Or run it without installing with `uvx withings-mcp`. For development from a clone:
+
+```bash
 git clone https://github.com/partymola/withings-mcp.git
 cd withings-mcp
 uv venv --python 3.13 .venv
@@ -124,11 +130,11 @@ uv pip install -e . && uv pip install pytest
 - **Local storage**: Health data stays in your local SQLite database
 - **Token storage**: OAuth tokens stored in `config/` (gitignored, file permissions 0600)
 - **Error messages**: Never contain health data values - only status codes
-- **Pre-commit hook**: An optional hook (`scripts/check-no-data.sh`) blocks database files and credentials from commits - install it with the one-liner in [CONTRIBUTING.md](CONTRIBUTING.md)
+- **Pre-commit hook**: An optional hook (`scripts/check-no-data.sh`) blocks database files and credentials from commits - install it with the one-liner in [CONTRIBUTING.md](https://github.com/partymola/withings-mcp/blob/main/CONTRIBUTING.md)
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, the test workflow, and the pre-commit hook. Changes are tracked in [CHANGELOG.md](CHANGELOG.md).
+See [CONTRIBUTING.md](https://github.com/partymola/withings-mcp/blob/main/CONTRIBUTING.md) for development setup, the test workflow, and the pre-commit hook. Changes are tracked in [CHANGELOG.md](https://github.com/partymola/withings-mcp/blob/main/CHANGELOG.md).
 
 ## License
 

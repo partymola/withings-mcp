@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "withings-mcp"
-version = "0.2.0"
+version = "0.2.1"
 description = "MCP server for the Withings Health API with OAuth, local cache, and trend analysis."
 readme = "README.md"
 license = "GPL-3.0-or-later"
