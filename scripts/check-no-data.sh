@@ -1,11 +1,12 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Pre-commit hook: reject commits containing database files, config secrets,
 # or suspiciously large files that might contain real health data.
 #
-# Install: cp scripts/check-no-data.sh .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
-# Or: make install-hooks
+# POSIX sh compatible - no bash required.
+#
+# Install: ln -sf ../../scripts/check-no-data.sh .git/hooks/pre-commit
 
-set -euo pipefail
+set -eu
 
 errors=0
 
@@ -29,7 +30,11 @@ if git diff --cached --name-only | grep -E '^config/.*\.(json|env)$' | grep -qvE
     errors=1
 fi
 
-# Check for large files (>100KB) that might be data dumps
+# Check for large files (>100KB) that might be data dumps.
+# Use a temp file instead of process substitution to keep this POSIX sh compatible.
+_tmpfile=$(mktemp)
+trap 'rm -f "$_tmpfile"' EXIT
+git diff --cached --name-only --diff-filter=ACM > "$_tmpfile"
 while IFS= read -r file; do
     # A dependency lockfile is legitimately large and only grows.
     case "$file" in
@@ -40,7 +45,7 @@ while IFS= read -r file; do
         echo "ERROR: Staged file '$file' is $(( size / 1024 ))KB (>100KB) - possible data leak"
         errors=1
     fi
-done < <(git diff --cached --name-only --diff-filter=ACM)
+done < "$_tmpfile"
 
 if [ "$errors" -ne 0 ]; then
     echo ""
