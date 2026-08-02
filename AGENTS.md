@@ -24,7 +24,7 @@ The `scripts/check-no-data.sh` pre-commit hook rejects database files, config se
 ## Architecture
 
 - **Entry point**: `src/main.py` - routes `auth`/`sync` subcommands or starts the MCP stdio server
-- **FastMCP**: `mcp_instance.py` creates the shared `FastMCP("withings-mcp")` instance
+- **MCP server**: `mcp_instance.py` creates the shared `MCPServer("withings-mcp")` instance
 - **Auth**: `auth.py` - OAuth with a 30-second inline code exchange in the callback handler, token refresh with a 5-min buffer. Redirect `http://localhost:8585`; scopes `user.info,user.metrics,user.activity`; access tokens 3h, refresh tokens 1 year
 - **API**: `api.py` - POST wrapper that handles Withings' status-in-body errors, typed exceptions
 - **DB**: `db.py` - SQLite schema, insert/query helpers

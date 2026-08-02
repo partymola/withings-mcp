@@ -1,5 +1,5 @@
-"""Shared FastMCP instance for the Withings MCP server."""
+"""Shared MCP server instance for the Withings MCP server."""
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
-mcp = FastMCP("withings-mcp")
+mcp = MCPServer("withings-mcp")
