@@ -1,5 +1,7 @@
 # withings-mcp
 
+[![MCP Toplist](https://mcptoplist.com/badge/io.github.partymola%2Fwithings-mcp.svg)](https://mcptoplist.com/server/io.github.partymola%2Fwithings-mcp)
+
 <!-- mcp-name: io.github.partymola/withings-mcp -->
 
 [![CI](https://github.com/partymola/withings-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/partymola/withings-mcp/actions/workflows/ci.yml)
