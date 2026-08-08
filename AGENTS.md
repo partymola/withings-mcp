@@ -31,7 +31,7 @@ The `scripts/check-no-data.sh` pre-commit hook rejects database files, config se
 - **Tools**: `tools/` - domain-grouped modules
 - **Helpers**: `helpers.py` - value parsing, date coercion, formatting; `MEASURE_TYPES` and `WORKOUT_CATEGORIES` constants live here
 - **Config**: env vars `WITHINGS_MCP_CONFIG_DIR`, `WITHINGS_MCP_DB_PATH`
-- **Doctor**: `doctor.py` - the `doctor` subcommand. Every check is offline and read-only, and two properties are load-bearing rather than incidental: it never opens the database through `db.get_db()` (which would create it and destroy the evidence for the wrong-path and stale-cache checks), and it imports only `config` and `db` - never `auth` or `api`, so no code path can spend the refresh token another host owns. Both are pinned by tests in `tests/test_doctor.py`; keep them true when adding a check
+- **Doctor**: `doctor.py` - the `doctor` subcommand. Every check is read-only and makes no API call, and two properties are load-bearing rather than incidental: it never opens the database through `db.get_db()` (which would create it and destroy the evidence for the wrong-path and stale-cache checks), and of this package it imports only `config` and `db` - never `auth` or `api`, so no code path can send the stored refresh token or rewrite the token file. Both are pinned in `tests/test_doctor.py`, the second by parsing this module's imports rather than by observing behaviour; keep them true when adding a check
 
 ## Database schema
 

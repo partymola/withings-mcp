@@ -233,10 +233,6 @@ class TestSyncSleep(unittest.TestCase):
         self.assertEqual(sleep_rows(conn), [])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestSyncLogRecordsFailures(unittest.TestCase):
     """Every failure a run_sync call swallows must leave a row in sync_log.
 
@@ -273,6 +269,17 @@ class TestSyncLogRecordsFailures(unittest.TestCase):
         _, rows = self._run_sync_raising(sync_tools.api.WithingsAPIError("boom"))
         self.assertEqual([(r["data_type"], r["status"]) for r in rows], [("body", "error")])
 
+    def test_a_rejected_refresh_is_not_logged_and_propagates(self):
+        """The boundary of what this class covers, pinned rather than assumed.
+
+        A revoked or missing refresh token raises RuntimeError from auth, which
+        run_sync does not catch, so no row is written and the caller sees the
+        exception. Widening the catch here without deciding what to log would
+        silently change that.
+        """
+        with self.assertRaises(RuntimeError):
+            self._run_sync_raising(RuntimeError("Token refresh failed"))
+
     def test_rate_limit_is_logged(self):
         _, rows = self._run_sync_raising(sync_tools.api.WithingsRateLimitError("slow down"))
         self.assertEqual([(r["data_type"], r["status"]) for r in rows], [("body", "partial")])
@@ -289,3 +296,7 @@ class TestSyncLogRecordsFailures(unittest.TestCase):
         for status in ("auth_error", "error", "partial"):
             sync_tools.db.log_sync(conn, "body", status, notes="later but not progress")
         self.assertEqual(sync_tools.db.get_last_sync(conn, "body"), good)
+
+
+if __name__ == "__main__":
+    unittest.main()

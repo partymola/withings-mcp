@@ -83,6 +83,8 @@ In Claude Code, say: "Sync my Withings data"
 
 This runs `withings_sync` to populate the local cache. Subsequent syncs only fetch new data.
 
+If anything does not work - no data where you expect it, a sync that stops happening - run `withings-mcp doctor`. It reports the paths and credentials actually in use and what needs fixing, without making an API call.
+
 You can also sync from the command line without an MCP client:
 
 ```bash

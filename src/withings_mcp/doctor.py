@@ -1,29 +1,35 @@
 """Preflight diagnostic: report what is wrong with a setup, and how to fix it.
 
-Every check here is offline and read-only, and two consequences are load-bearing
+Every check reads only, and makes no API call. Two consequences are load-bearing
 rather than incidental:
 
 - Nothing is opened through `db.get_db()`, which creates the database if it is
   absent. Doing so would manufacture an empty database at the resolved path and
   destroy the evidence for the misconfigured-path and stale-cache checks - the
-  two this command exists for. The database is opened read-only throughout.
+  two this command exists for. The database is opened read-only throughout, so
+  on a database in WAL mode SQLite may still create the `-wal` and `-shm` side
+  files; the cache itself is never altered.
 - No credential value is ever placed in a finding. The report is meant to be
-  pasted into a bug report, so files are described by shape - present,
-  parseable, which fields are set - and never by content.
+  read out or pasted into a bug report, so files are described by shape -
+  present, parseable, which fields are set - and never by content. It does name
+  the resolved paths, which carry the user's home directory, because a wrong
+  path is the fault this command most often has to show.
 
-Only `config` and `db` are imported. Nothing here may reach `auth`, whose
-refresh call rotates the stored refresh token: a diagnostic that did so would
-break whichever host legitimately owns the credentials.
+Of this package only `config` and `db` are imported: nothing here calls
+`auth.refresh_token`, which sends the stored refresh token and rewrites the
+token file with whatever comes back. A diagnostic that did that could disturb
+whichever host legitimately owns the credentials.
 """
 
 import json
 import os
 import socket
 import sqlite3
+import sys
 import time
 from contextlib import closing
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
 
@@ -34,11 +40,6 @@ WARN = "warn"
 FAIL = "fail"
 
 _SEVERITY_MARK = {OK: "ok  ", WARN: "warn", FAIL: "FAIL"}
-
-# Tables holding synced measurements, each keyed by a `date` column. sync_log is
-# excluded deliberately: it records attempts, so it stays current even when
-# every sync is failing and would mask exactly the staleness worth reporting.
-_CACHED_TABLES = ("body_measurements", "sleep_summaries", "activities", "workouts")
 
 # A cache older than this has stopped updating rather than merely lagging. The
 # server syncs at most once a day per type, so three days without a new row is
@@ -93,7 +94,18 @@ def _reference_schema() -> dict[str, set[str]]:
 
 
 def _describe_path_source(env_var: str) -> str:
-    return f"from ${env_var}" if os.environ.get(env_var) else "default"
+    """Say where a path came from, matching how config.py actually resolves it.
+
+    config.py reads the variable with a plain `os.environ.get`, so an empty
+    value is still an override - it resolves to `Path("")`, the current
+    directory. Testing truthiness here would report that as the default and
+    send the reader looking for the wrong fault.
+    """
+    if env_var not in os.environ:
+        return "default"
+    if not os.environ[env_var]:
+        return f"${env_var} is set but empty, so the path resolves to the working directory"
+    return f"from ${env_var}"
 
 
 def _timestamp_or_none(value) -> datetime | None:
@@ -256,25 +268,48 @@ def _check_token_file() -> list[Finding]:
 
 
 def _check_token_file_writability(path: Path) -> list[Finding]:
-    """An unwritable token file loses the rotated refresh token on next use.
+    """An unwritable token file cannot store the result of a refresh.
 
-    Withings returns a new refresh token from every refresh and auth.py writes
-    the file in place, so a failed write leaves no working token anywhere: the
-    old one has already been spent remotely.
+    A refresh may return a replacement refresh token - auth.py stores whichever
+    it gets and falls back to the existing one when the response carries none.
+    Either way the new access token has nowhere to go, so every later call
+    refreshes again, and a replacement that did arrive is lost while the token
+    it replaced may already be spent.
 
-    Only the file is checked. The rewrite truncates an existing file, which
-    needs no write permission on the directory, so a read-only config directory
-    holding a writable token file works and must not be reported.
+    Two things are required, and write permission alone is not enough: auth.py
+    follows the write with `os.chmod`, which needs ownership. A token file owned
+    by another user but group-writable passes `os.access` and then fails on the
+    chmod, after the write has already happened.
+
+    The directory is deliberately not checked. The rewrite truncates an existing
+    file, which needs no write permission on the directory, so a read-only
+    config directory holding a writable token file works and must not be
+    reported.
     """
-    if os.access(path, os.W_OK):
+    writable = os.access(path, os.W_OK)
+    try:
+        owned = path.stat().st_uid == os.geteuid()
+    except OSError:
+        owned = True  # Cannot tell; do not invent a fault.
+
+    if writable and owned:
         return []
+
+    detail = (
+        "withings_tokens.json is not writable by this user"
+        if not writable
+        else "withings_tokens.json is owned by another user, and saving a refreshed "
+        "token also sets its permissions, which requires ownership"
+    )
     return [
         Finding(
             "credentials",
             FAIL,
-            "withings_tokens.json is not writable by this user. Withings rotates the "
-            "refresh token on every use, so the next refresh will succeed remotely and "
-            "then fail to save - leaving no usable token at all.",
+            f"{detail}, so a refresh cannot be stored. Every call will refresh again, "
+            "and if the refresh returns a replacement refresh token it is lost while "
+            "the one it replaced may already be spent. Until this process restarts it "
+            "keeps using the token it holds in memory, so the failure may not show "
+            "immediately.",
             "Fix ownership/permissions before the next sync runs.",
         )
     ]
@@ -297,18 +332,46 @@ def check_database() -> list[Finding]:
             )
         ]
 
-    if path.is_dir():
-        return [Finding("database", FAIL, f"{path} is a directory, not a database file.")]
+    # is_file() rather than not is_dir(): a FIFO passes the directory test and
+    # then blocks the open forever, and a diagnostic that hangs is worse than
+    # one that reports.
+    if not path.is_file():
+        return [
+            Finding(
+                "database",
+                FAIL,
+                f"{path} is not a regular file, so it cannot be a database.",
+            )
+        ]
 
     findings = []
-    if not os.access(path, os.W_OK):
+    if not os.access(path, os.R_OK):
+        # Reported before opening, because the open would fail with the same
+        # error SQLite raises for a corrupt file - and that path recommends
+        # deleting the database, which would be catastrophic advice here.
+        return findings + [
+            Finding(
+                "database",
+                FAIL,
+                "Database exists but is not readable by this user. Nothing can be "
+                "queried, and this says nothing about whether its contents are sound.",
+                "Fix ownership/permissions - do not delete it.",
+            )
+        ]
+
+    # SQLite writes its rollback journal beside the database, so a writable file
+    # in a read-only directory still fails every insert. Checking only the file
+    # would miss precisely the case this finding describes.
+    if not os.access(path, os.W_OK) or not os.access(path.parent, os.W_OK):
         findings.append(
             Finding(
                 "database",
                 WARN,
-                "Database is not writable by this user; queries will work but every "
-                "sync will fail.",
-                "Fix ownership/permissions, or run syncs as the owning user.",
+                "Database cannot be written by this user; queries will work but every "
+                "sync will fail. SQLite needs to write both the database file and a "
+                "journal in its directory.",
+                "Fix ownership/permissions on the file and its directory, or run syncs "
+                "as the owning user.",
             )
         )
 
@@ -325,6 +388,21 @@ def check_database() -> list[Finding]:
                 ]
             findings.extend(_check_schema(conn))
             findings.extend(_check_freshness(conn))
+    except sqlite3.OperationalError:
+        # Split from DatabaseError below on purpose. SQLite raises this when it
+        # cannot open or read the file - locked by a running sync, or blocked by
+        # permissions - which says nothing about the contents. Sharing the
+        # corruption branch would tell a user with a healthy database to delete
+        # it.
+        return findings + [
+            Finding(
+                "database",
+                FAIL,
+                f"{path} could not be opened. It may be locked by a sync running now, "
+                "or unreadable by this user. Its contents are not implicated.",
+                "Retry once any sync has finished, and check ownership/permissions.",
+            )
+        ]
     except sqlite3.DatabaseError:
         return findings + [
             Finding(
@@ -384,9 +462,21 @@ def _check_schema(conn: sqlite3.Connection) -> list[Finding]:
     return findings
 
 
+def _cached_tables() -> list[str]:
+    """Every table this version caches measurements in, read from db.SCHEMA.
+
+    Derived rather than listed so that a table added later is covered without
+    anyone remembering to come back here - the same reason _reference_schema
+    builds itself from the schema. A cache table is one keyed by date, which
+    also excludes sync_log: it records attempts, so it would stay current while
+    every sync failed and mask the staleness worth reporting.
+    """
+    return sorted(t for t, columns in _reference_schema().items() if "date" in columns)
+
+
 def _check_freshness(conn: sqlite3.Connection) -> list[Finding]:
     newest = {}
-    for table in _CACHED_TABLES:
+    for table in _cached_tables():
         try:
             row = conn.execute(f"SELECT MAX(date) FROM '{table}'").fetchone()
         except sqlite3.DatabaseError:
@@ -410,10 +500,22 @@ def _check_freshness(conn: sqlite3.Connection) -> list[Finding]:
     # Judged on the newest row across all types, not per type. Body measurements
     # and workouts only appear when the user steps on the scales or records a
     # session, so flagging those individually would cry wolf on a healthy cache.
+    # Whole days between two dates. Measuring from `datetime.now()` instead
+    # would fold in the time of day, so the same cache read stale at 23:00 and
+    # fresh at 01:00.
     try:
-        age = datetime.now() - datetime.strptime(latest, "%Y-%m-%d")
+        age = date.today() - datetime.strptime(latest, "%Y-%m-%d").date()
     except ValueError:
-        return [Finding("cache", OK, summary)]
+        # Dates are stored as the API returned them, so a malformed one sorts
+        # high and would otherwise mark any cache current, however old.
+        return [
+            Finding(
+                "cache",
+                WARN,
+                f"{summary} - that date is not a calendar date, so freshness cannot be judged.",
+                "Re-sync to overwrite it.",
+            )
+        ]
 
     if age <= _CACHE_STALE_AFTER:
         return [Finding("cache", OK, summary)]
@@ -500,7 +602,12 @@ def check_auth_prerequisites() -> list[Finding]:
                 )
             )
 
-    if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
+    # DISPLAY/WAYLAND_DISPLAY are X11/Wayland only; macOS and Windows open a
+    # browser without either, so testing them alone flags every mac as headless.
+    headless = sys.platform not in ("darwin", "win32") and not (
+        os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+    )
+    if headless:
         findings.append(
             Finding(
                 "auth browser",

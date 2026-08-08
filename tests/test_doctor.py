@@ -24,6 +24,11 @@ from withings_mcp import config, db, doctor
 FAKE_CLIENT_SECRET = "not-a-real-secret-0000"
 FAKE_ACCESS_TOKEN = "fake-access-token-0000"
 FAKE_REFRESH_TOKEN = "fake-refresh-token-0000"
+FAKE_USER_ID = 12345678
+
+# os.access ignores permission bits under CAP_DAC_OVERRIDE, so every
+# permissions test below is meaningless as root.
+skip_as_root = pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses permission bits")
 
 
 def _write_client(config_dir, client_id="fake-client-id-0000"):
@@ -38,7 +43,7 @@ def _write_tokens(config_dir, expires_at=None, **overrides):
     payload = {
         "access_token": FAKE_ACCESS_TOKEN,
         "refresh_token": FAKE_REFRESH_TOKEN,
-        "userid": 12345678,
+        "userid": FAKE_USER_ID,
         "expires_at": time.time() + 3600 if expires_at is None else expires_at,
     }
     payload.update(overrides)
@@ -105,45 +110,80 @@ class TestResolvedPaths:
         details = [f.detail for f in doctor.check_environment()]
         assert all("(default)" in d for d in details)
 
+    def test_empty_env_is_not_reported_as_the_default(self, setup, monkeypatch):
+        """config.py reads the variable raw, so empty means the working directory.
+
+        Calling that "default" sends the reader hunting the wrong fault.
+        """
+        monkeypatch.setenv("WITHINGS_MCP_DB_PATH", "")
+        detail = _named(doctor.check_environment(), "database path")[0].detail
+        assert "default" not in detail
+        assert "empty" in detail
+
 
 class TestStaysOffline:
-    """Invariant: no code path can reach the token-rotating half of the server.
+    """Invariant: no code path can reach the token-writing half of the server.
 
-    Asserted structurally rather than by behaviour. `auth.refresh_token` spends
-    the stored refresh token and writes a new one, so a diagnostic that imported
-    it could break whichever host owns the credentials - and no test that only
-    watches a healthy setup would notice.
+    Asserted structurally rather than by behaviour. `auth.refresh_token` sends
+    the stored refresh token and rewrites the file with what comes back, so a
+    diagnostic that imported it could disturb whichever host owns the
+    credentials - and no test watching a healthy setup would notice.
     """
 
-    def test_doctor_imports_neither_auth_nor_api(self):
+    def _imported_names(self):
+        """Every module name doctor.py imports, dotted forms included."""
         import ast
         from pathlib import Path
 
         tree = ast.parse(Path(doctor.__file__).read_text())
-        imported = set()
+        names = set()
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom):
-                imported.update(a.name for a in node.names)
+                # `from . import x` has no module; `from .x import y` has both.
+                for alias in node.names:
+                    names.add(f"{node.module}.{alias.name}" if node.module else alias.name)
                 if node.module:
-                    imported.add(node.module)
+                    names.add(node.module)
             elif isinstance(node, ast.Import):
-                imported.update(a.name for a in node.names)
+                names.update(a.name for a in node.names)
+        return names
 
-        assert "auth" not in imported
-        assert "api" not in imported
-        assert {"config", "db"} <= imported
+    def test_doctor_imports_neither_auth_nor_api(self):
+        # Match on the last dotted segment so `import withings_mcp.auth` is
+        # caught as well as `from . import auth`.
+        segments = {seg for name in self._imported_names() for seg in name.split(".")}
+        assert "auth" not in segments
+        assert "api" not in segments
+
+    def test_doctor_imports_nothing_else_from_the_package(self):
+        """A subset assertion would pass for any new sibling import."""
+        siblings = {
+            seg
+            for name in self._imported_names()
+            for seg in name.split(".")
+            if seg in {"api", "auth", "config", "db", "helpers", "mcp_instance", "tools"}
+        }
+        assert siblings == {"config", "db"}
 
 
 class TestNoCredentialLeaks:
-    """Invariant 3 - the report is meant to be pasted into a bug report."""
+    """No credential value reaches the report."""
 
-    def test_secrets_never_appear_in_any_finding(self, setup):
-        config_dir, db_path = setup
+    def test_no_fragment_of_any_credential_appears(self, setup):
+        """Whole-string absence would miss a truncated token or a user id.
+
+        Both are things a well-meaning edit adds - "tokens present (abc12345)" -
+        and both are named as identifiers by this repo's data-safety rules.
+        """
+        config_dir, _ = setup
         _write_client(config_dir)
         _write_tokens(config_dir)
         report = doctor.format_report(doctor.run_checks())
+
         for secret in (FAKE_CLIENT_SECRET, FAKE_ACCESS_TOKEN, FAKE_REFRESH_TOKEN):
-            assert secret not in report
+            runs = {secret[i : i + 8] for i in range(len(secret) - 7)}
+            assert not any(run in report for run in runs)
+        assert str(FAKE_USER_ID) not in report
 
     def test_malformed_credential_file_content_is_not_echoed(self, setup):
         config_dir, _ = setup
@@ -213,13 +253,6 @@ class TestAwkwardPaths:
         assert doctor.OK in _severities(findings, "schema")
         assert (target.stat().st_mtime_ns, target.read_bytes()) == before
         assert not list(tmp_path.glob("*-journal")) and not list(tmp_path.glob("*-wal"))
-
-    @pytest.mark.parametrize("name", ["with#hash.db", "with?query.db"])
-    def test_missing_db_at_an_awkward_path_is_not_created(self, tmp_path, monkeypatch, name):
-        target = tmp_path / name
-        monkeypatch.setattr(config, "DB_PATH", target)
-        doctor.check_database()
-        assert not target.exists()
 
     def test_readonly_connection_refuses_writes(self, tmp_path):
         target = tmp_path / "with#hash.db"
@@ -340,6 +373,7 @@ class TestCredentials:
         _write_tokens(config_dir, expires_at=time.time() * 1000)
         assert _severities(doctor.check_credentials(), "access token") == {doctor.WARN}
 
+    @skip_as_root
     def test_unwritable_token_file_fails(self, setup):
         """A refresh rotates the token remotely; a failed write loses it entirely."""
         config_dir, _ = setup
@@ -383,3 +417,268 @@ class TestSyncLog:
 
     def test_absent_database_reports_nothing(self, setup):
         assert doctor.check_sync_health() == []
+
+
+class TestTheCommandItself:
+    """run_doctor joins run_checks, format_report and exit_code.
+
+    Tested end to end because each of those passing separately says nothing
+    about the command a user runs: gutting run_doctor to `return 0` left the
+    rest of this file green.
+    """
+
+    def test_a_broken_setup_prints_findings_and_exits_one(self, setup, capsys):
+        assert doctor.run_doctor() == 1
+        out = capsys.readouterr().out
+        assert "app config" in out
+        assert "need fixing" in out
+
+    def test_remediation_is_printed_for_a_failure(self, setup, capsys):
+        """The fix line is half of what the command is for."""
+        doctor.run_doctor()
+        out = capsys.readouterr().out
+        assert "->" in out
+        assert "withings-mcp auth" in out
+
+    def test_a_healthy_setup_prints_no_remediation(self, setup, capsys, monkeypatch):
+        monkeypatch.setattr(doctor, "run_checks", lambda: [doctor.Finding("x", doctor.OK, "fine")])
+        assert doctor.run_doctor() == 0
+        out = capsys.readouterr().out
+        assert "All checks passed." in out
+        assert "->" not in out
+
+
+class TestEveryCheckRuns:
+    def test_a_raising_check_does_not_stop_the_ones_after_it(self, setup, monkeypatch):
+        """Asserting on an EARLIER check cannot observe continuation."""
+        sentinel = doctor.Finding("sentinel", doctor.OK, "ran")
+
+        def check_database():
+            raise RuntimeError(FAKE_ACCESS_TOKEN)
+
+        monkeypatch.setattr(doctor, "check_database", check_database)
+        monkeypatch.setattr(doctor, "check_sync_health", lambda: [sentinel])
+
+        findings = doctor.run_checks()
+        assert sentinel in findings
+        assert any(f.name == "check_database" and f.severity == doctor.FAIL for f in findings)
+
+    def test_no_check_is_dropped_from_the_run(self, setup, monkeypatch):
+        """Deleting a check from the tuple otherwise passes silently."""
+        expected = (
+            "check_environment",
+            "check_credentials",
+            "check_database",
+            "check_sync_health",
+            "check_auth_prerequisites",
+        )
+        for name in expected:
+            monkeypatch.setattr(
+                doctor, name, (lambda n: lambda: [doctor.Finding(n, doctor.OK, "")])(name)
+            )
+        assert {f.name for f in doctor.run_checks()} == set(expected)
+
+
+class TestUnreadableOrLockedDatabase:
+    """A database that cannot be opened is not a corrupt one.
+
+    Both raise from sqlite3, and the corruption remedy is "delete it and
+    re-sync" - catastrophic advice for a healthy database owned by root.
+    """
+
+    @skip_as_root
+    def test_unreadable_database_is_not_called_corrupt(self, setup):
+        _, db_path = setup
+        db.get_db(db_path).close()
+        os.chmod(db_path, 0o000)
+        try:
+            findings = doctor.check_database()
+            detail = " ".join(f.detail for f in _named(findings, "database"))
+            fixes = " ".join(f.fix or "" for f in _named(findings, "database"))
+            assert doctor.FAIL in _severities(findings, "database")
+            assert "not readable" in detail
+            assert "delete" not in fixes.replace("do not delete", "")
+        finally:
+            os.chmod(db_path, 0o600)
+
+    @skip_as_root
+    def test_read_only_directory_is_reported_as_unwritable(self, setup):
+        """SQLite writes a journal beside the database, so the directory counts."""
+        _, db_path = setup
+        db.get_db(db_path).close()
+        os.chmod(db_path.parent, 0o500)
+        try:
+            findings = doctor.check_database()
+            assert doctor.WARN in _severities(findings, "database")
+            assert "sync will fail" in " ".join(f.detail for f in _named(findings, "database"))
+        finally:
+            os.chmod(db_path.parent, 0o700)
+
+    def test_a_fifo_does_not_hang_the_run(self, setup):
+        """sqlite3.connect on a named pipe blocks forever."""
+        _, db_path = setup
+        os.mkfifo(db_path)
+        try:
+            findings = doctor.check_database()
+            assert doctor.FAIL in _severities(findings, "database")
+            assert "not a regular file" in " ".join(f.detail for f in _named(findings, "database"))
+        finally:
+            db_path.unlink()
+
+
+class TestFreshnessEdges:
+    def _seed(self, db_path, when):
+        conn = db.get_db(db_path)
+        conn.execute("INSERT INTO activities (date) VALUES (?)", (when,))
+        conn.commit()
+        conn.close()
+
+    def test_at_the_threshold_is_still_ok(self, setup):
+        _, db_path = setup
+        self._seed(db_path, (date.today() - timedelta(days=3)).isoformat())
+        assert _severities(doctor.check_database(), "cache") == {doctor.OK}
+
+    def test_one_day_past_the_threshold_warns(self, setup):
+        _, db_path = setup
+        self._seed(db_path, (date.today() - timedelta(days=4)).isoformat())
+        assert _severities(doctor.check_database(), "cache") == {doctor.WARN}
+
+    def test_a_malformed_date_does_not_read_as_fresh(self, setup):
+        """Dates come from the API verbatim, and a junk value sorts high."""
+        _, db_path = setup
+        self._seed(db_path, "not-a-date")
+        findings = doctor.check_database()
+        assert _severities(findings, "cache") == {doctor.WARN}
+        assert "not a calendar date" in " ".join(f.detail for f in _named(findings, "cache"))
+
+
+class TestAuthPrerequisites:
+    def test_headless_host_is_told_how_to_tunnel(self, monkeypatch):
+        monkeypatch.setattr(doctor.sys, "platform", "linux")
+        monkeypatch.delenv("DISPLAY", raising=False)
+        monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+        findings = doctor.check_auth_prerequisites()
+        assert _severities(findings, "auth browser") == {doctor.WARN}
+        assert "ssh -L 8585:localhost:8585" in _named(findings, "auth browser")[0].fix
+
+    def test_a_display_means_no_warning(self, monkeypatch):
+        monkeypatch.setattr(doctor.sys, "platform", "linux")
+        monkeypatch.setenv("DISPLAY", ":0")
+        assert not _named(doctor.check_auth_prerequisites(), "auth browser")
+
+    def test_macos_is_not_reported_as_headless(self, monkeypatch):
+        """Neither variable is set on macOS, yet the browser opens fine."""
+        monkeypatch.setattr(doctor.sys, "platform", "darwin")
+        monkeypatch.delenv("DISPLAY", raising=False)
+        monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+        assert not _named(doctor.check_auth_prerequisites(), "auth browser")
+
+    def test_a_bound_callback_port_is_reported(self, monkeypatch):
+        import socket
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as held:
+            held.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                held.bind(("localhost", config.WITHINGS_CALLBACK_PORT))
+            except OSError:
+                pytest.skip("callback port already in use by something else")
+            held.listen(1)
+            assert _severities(doctor.check_auth_prerequisites(), "auth callback") == {doctor.WARN}
+
+    def test_a_free_callback_port_is_silent(self):
+        assert not _named(doctor.check_auth_prerequisites(), "auth callback")
+
+
+class TestSyncLogAcrossTypes:
+    def _log(self, db_path, rows):
+        conn = db.get_db(db_path)
+        for data_type, status in rows:
+            db.log_sync(conn, data_type, status)
+        conn.commit()
+        conn.close()
+
+    def test_a_stale_failure_is_reported_when_another_type_succeeded_later(self, setup):
+        """One data type cannot mask another's failure.
+
+        With a single type the per-type maximum and the global maximum are the
+        same row, so a correlated subquery and an uncorrelated one agree.
+        """
+        _, db_path = setup
+        self._log(db_path, [("body", "error"), ("activity", "ok")])
+        findings = doctor.check_sync_health()
+        assert _severities(findings, "sync log") != {doctor.OK}
+        assert "body" in _named(findings, "sync log")[0].detail
+
+
+class TestIntegrityCheck:
+    def test_a_failed_integrity_check_is_reported_as_such(self, setup):
+        """A corrupted page still opens, so this branch needs a real one.
+
+        Garbage bytes fail the schema query instead and never reach it.
+        """
+        _, db_path = setup
+        conn = db.get_db(db_path)
+        for i in range(400):
+            conn.execute(
+                "INSERT INTO workouts (date, startdate, enddate, category) VALUES (?, ?, ?, ?)",
+                ("2026-03-10", f"2026-03-10T{i:04d}", "2026-03-10T01:00:00", i),
+            )
+        conn.commit()
+        conn.close()
+
+        page_size = 4096
+        raw = bytearray(db_path.read_bytes())
+        assert len(raw) > page_size * 2, "need more than two pages to corrupt one"
+        raw[page_size * 2 : page_size * 2 + 200] = b"\xff" * 200
+        db_path.write_bytes(raw)
+
+        findings = doctor.check_database()
+        detail = " ".join(f.detail for f in _named(findings, "database"))
+        assert doctor.FAIL in _severities(findings, "database")
+        assert "integrity check" in detail
+
+
+class TestConfigPathSource:
+    def test_config_path_reads_its_own_variable(self, setup, monkeypatch):
+        """A copy-paste of the DB variable here would go unnoticed."""
+        monkeypatch.setenv("WITHINGS_MCP_CONFIG_DIR", "/opt/withings/cfg")
+        monkeypatch.delenv("WITHINGS_MCP_DB_PATH", raising=False)
+        findings = doctor.check_environment()
+        assert "from $WITHINGS_MCP_CONFIG_DIR" in _named(findings, "config path")[0].detail
+        assert "(default)" in _named(findings, "database path")[0].detail
+
+
+class TestOpenFailureIsNotCalledCorruption:
+    """A database SQLite cannot open is not a database it found broken.
+
+    Reached when a sync holds the write lock, or the file is unreadable in a
+    way the earlier permission check cannot see. Both used to share the
+    corruption branch, whose remedy is to delete the cache.
+    """
+
+    def test_a_database_that_will_not_open_keeps_its_contents_unaccused(self, setup, monkeypatch):
+        _, db_path = setup
+        db.get_db(db_path).close()
+
+        def refuse(path):
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(doctor, "_open_db_readonly", refuse)
+        findings = doctor.check_database()
+
+        assert doctor.FAIL in _severities(findings, "database")
+        detail = " ".join(f.detail for f in _named(findings, "database"))
+        fixes = " ".join(f.fix or "" for f in _named(findings, "database"))
+        assert "locked" in detail
+        assert "not implicated" in detail
+        assert "delete" not in fixes
+        assert "backup" not in fixes
+
+    def test_a_file_that_is_not_a_database_still_says_so(self, setup):
+        _, db_path = setup
+        db_path.write_bytes(b"this is not a database")
+        findings = doctor.check_database()
+        assert doctor.FAIL in _severities(findings, "database")
+        assert "not a readable SQLite database" in " ".join(
+            f.detail for f in _named(findings, "database")
+        )

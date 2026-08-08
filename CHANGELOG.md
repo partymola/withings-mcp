@@ -11,13 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `withings-mcp doctor` checks a setup and reports what needs fixing. It resolves and prints the config and database paths actually in use and where each came from, validates the credential files by shape, and reads the database read-only for schema drift, corruption and how current the cache is. It also reports failures recorded in the sync log - otherwise the only record that syncing stopped weeks ago while queries carried on serving an ageing cache.
+- `withings-mcp doctor` checks a setup and reports what needs fixing. It resolves and prints the config and database paths actually in use and where each came from, validates the credential files by shape, and reads the database read-only for schema drift, corruption and how current the cache is. It reports failures recorded in the sync log, which is otherwise the only trace that syncing stopped while queries carried on serving an ageing cache. It also flags what would break `withings-mcp auth` before you run it: the callback port already in use, and a host with no display, which gets the SSH tunnel to authorise over.
 
-  The command is offline and makes no API call, so it costs no rate-limit quota and cannot disturb a token another host is using. It never creates or modifies anything - notably it will not create the database, so a wrong `WITHINGS_MCP_DB_PATH` still reports as missing rather than being silently created empty. No credential value appears in the output. Exit status is non-zero when something needs fixing.
+  The command makes no API call, so it costs no rate-limit quota and cannot disturb a token another host is using. It does not create the database or change its contents, so a wrong `WITHINGS_MCP_DB_PATH` still reports as missing rather than being silently created empty. No credential value appears in the output. Exit status is non-zero when a check fails; warnings alone exit zero.
 
 ### Fixed
 
-- An authentication failure during sync is now recorded in `sync_log`. Rate-limit and API errors were logged and auth errors were not, so the one failure that stops syncing indefinitely was the one leaving no trace: the run reported it once, and afterwards queries carried on serving the cache with nothing anywhere saying why it had stopped growing. The resume cursor is unaffected - it only advances on a successful sync.
+- An authentication failure reported by the Withings API - a request still refused after a token refresh and retry - is now recorded in `sync_log` with status `auth_error`. Rate-limit and API errors were already logged and this one was not, so it passed through the sync run and left nothing behind: queries carried on serving the cache with no record of why it had stopped growing. The resume cursor is unaffected, since it only advances on a successful sync.
+
+  This does not cover every way authentication can fail. A refresh that is itself rejected - a revoked or expired refresh token, or a missing token file - raises before the sync loop can classify it, and still leaves no row. That path is unchanged here.
 
 ### Packaging
 
