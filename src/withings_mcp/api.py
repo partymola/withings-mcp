@@ -4,6 +4,7 @@ Withings API quirk: HTTP status is always 200. Errors are in the JSON
 response body under the 'status' field (0 = success).
 """
 
+import http.client
 import json
 import logging
 import urllib.error
@@ -71,7 +72,12 @@ def post(url: str, params: dict, retries: int = 2) -> dict:
         try:
             with urllib.request.urlopen(req, timeout=15) as resp:
                 body = json.loads(resp.read().decode())
-        except urllib.error.URLError as e:
+        except (OSError, http.client.HTTPException, UnicodeDecodeError) as e:
+            # Wider than URLError: a read timeout or reset arrives bare, a
+            # truncated response raises from http.client (not an OSError at
+            # all), and an undecodable body raises ValueError. Any of them
+            # escaping here would leave run_sync with no log row and an
+            # unclosed connection.
             raise WithingsAPIError("Network error. Check your connection.") from e
 
         status = body.get("status")

@@ -39,6 +39,16 @@ def run_sync(types: list[str], days: int = 30) -> dict:
     Returns a dict mapping each data type to its sync result.
     """
     conn = db.get_db()
+    try:
+        return _run_sync(conn, types, days)
+    finally:
+        # Closed in a finally so an exception nobody classified cannot leak the
+        # connection - which is what happened whenever one escaped the handlers
+        # below.
+        conn.close()
+
+
+def _run_sync(conn, types: list[str], days: int) -> dict:
     results = {}
     today = date.today()
 
@@ -92,7 +102,6 @@ def run_sync(types: list[str], days: int = 30) -> dict:
             db.log_sync(conn, dtype, "error", notes=str(e))
             results[dtype] = {"status": "error", "message": str(e)}
 
-    conn.close()
     return results
 
 

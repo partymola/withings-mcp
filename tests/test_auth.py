@@ -197,6 +197,12 @@ class TestRefreshToken:
                 auth.refresh_token()
 
     def test_refresh_nonzero_status_raises(self):
+        """A refusal, which must stay distinguishable from a network fault.
+
+        RefreshNetworkError subclasses RuntimeError, so asserting the base
+        class alone would pass whichever of the two was raised - and the two
+        lead to opposite advice downstream.
+        """
         opener = _urlopen_returning({"status": 401})
         with (
             _frozen_time(),
@@ -204,8 +210,9 @@ class TestRefreshToken:
             patch.object(auth, "_cached_creds", dict(_CREDS)),
             patch("withings_mcp.auth.urllib.request.urlopen", opener),
         ):
-            with pytest.raises(RuntimeError):
+            with pytest.raises(RuntimeError) as caught:
                 auth.refresh_token()
+        assert not isinstance(caught.value, auth.RefreshNetworkError)
 
     def test_refresh_network_error_raises(self):
         opener = Mock(side_effect=urllib.error.URLError("boom"))
@@ -215,7 +222,7 @@ class TestRefreshToken:
             patch.object(auth, "_cached_creds", dict(_CREDS)),
             patch("withings_mcp.auth.urllib.request.urlopen", opener),
         ):
-            with pytest.raises(RuntimeError):
+            with pytest.raises(auth.RefreshNetworkError):
                 auth.refresh_token()
 
 
@@ -247,3 +254,52 @@ class TestExchangeCode:
             body, err = auth._exchange_code("the-code", "cid", "csecret")
         assert body is None
         assert err.startswith("Network error")
+
+
+class TestExchangeCodeGuards:
+    """The auth code exchange runs inside the callback handler thread.
+
+    Anything escaping it surfaces there as a traceback while the CLI reports
+    only a timeout, so every failure has to come back as (None, message).
+    """
+
+    def _exchange(self, urlopen):
+        with patch("withings_mcp.auth.urllib.request.urlopen", urlopen):
+            return auth._exchange_code("code", "id", "secret")
+
+    def test_a_read_failure_is_returned_not_raised(self):
+        def urlopen(req, timeout=None):
+            raise TimeoutError("timed out")
+
+        body, error = self._exchange(urlopen)
+        assert body is None
+        assert error
+
+    def test_a_truncated_response_is_returned_not_raised(self):
+        import http.client
+
+        def urlopen(req, timeout=None):
+            raise http.client.IncompleteRead(b"partial")
+
+        body, error = self._exchange(urlopen)
+        assert body is None
+        assert error
+
+    def test_a_response_that_is_not_json_is_returned_not_raised(self):
+        body, error = self._exchange(_urlopen_returning_raw(b"<html>portal</html>"))
+        assert body is None
+        assert "unreadable" in error
+
+    def test_a_response_of_the_wrong_shape_is_returned_not_raised(self):
+        body, error = self._exchange(_urlopen_returning_raw(b'["not", "an", "object"]'))
+        assert body is None
+        assert error
+
+
+def _urlopen_returning_raw(payload):
+    resp = MagicMock()
+    resp.read.return_value = payload
+    cm = MagicMock()
+    cm.__enter__.return_value = resp
+    cm.__exit__.return_value = False
+    return Mock(return_value=cm)

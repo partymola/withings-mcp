@@ -1,5 +1,6 @@
 """Tests for API layer: status-in-body error handling, PII non-leakage."""
 
+import io
 import json
 import tempfile
 import unittest
@@ -235,6 +236,196 @@ class TestAgainstTheRealRefresh(unittest.TestCase):
             with self.assertRaises(api.WithingsAPIError) as caught:
                 self._post_with_token_file(tokens)
         self.assertNotIsInstance(caught.exception, api.WithingsAuthError)
+
+    def test_a_read_timeout_is_a_network_failure(self):
+        """urlopen wraps only connect-phase errors, so this arrives bare."""
+        tokens = '{"access_token": "a", "refresh_token": "r", "expires_at": 0}'
+        with patch.object(auth.urllib.request, "urlopen", side_effect=TimeoutError("timed out")):
+            with self.assertRaises(api.WithingsAPIError) as caught:
+                self._post_with_token_file(tokens)
+        self.assertNotIsInstance(caught.exception, api.WithingsAuthError)
+
+    def test_a_reset_connection_is_a_network_failure(self):
+        tokens = '{"access_token": "a", "refresh_token": "r", "expires_at": 0}'
+        with patch.object(
+            auth.urllib.request, "urlopen", side_effect=ConnectionResetError("reset")
+        ):
+            with self.assertRaises(api.WithingsAPIError) as caught:
+                self._post_with_token_file(tokens)
+        self.assertNotIsInstance(caught.exception, api.WithingsAuthError)
+
+    def _http_error(self, code):
+        return urllib.error.HTTPError("https://example.invalid", code, "boom", {}, io.BytesIO(b""))
+
+    def test_a_refusal_from_the_server_is_an_auth_failure(self):
+        """The headline case: a revoked refresh token, answered with 4xx."""
+        tokens = '{"access_token": "a", "refresh_token": "r", "expires_at": 0}'
+        with patch.object(auth.urllib.request, "urlopen", side_effect=self._http_error(401)):
+            with self.assertRaises(api.WithingsAuthError):
+                self._post_with_token_file(tokens)
+
+    def test_a_server_side_failure_is_not_an_auth_failure(self):
+        """A 5xx is the server unable to answer, not a judgement on credentials."""
+        tokens = '{"access_token": "a", "refresh_token": "r", "expires_at": 0}'
+        with patch.object(auth.urllib.request, "urlopen", side_effect=self._http_error(503)):
+            with self.assertRaises(api.WithingsAPIError) as caught:
+                self._post_with_token_file(tokens)
+        self.assertNotIsInstance(caught.exception, api.WithingsAuthError)
+
+    def _urlopen_returning(self, payload):
+        response = MagicMock()
+        response.read.return_value = payload
+        response.__enter__ = lambda s: s
+        response.__exit__ = lambda *a: None
+        return patch.object(auth.urllib.request, "urlopen", return_value=response)
+
+    def test_a_response_that_is_not_json_is_a_network_failure(self):
+        """A captive portal answering 200 with HTML is not a bad credential."""
+        tokens = '{"access_token": "a", "refresh_token": "r", "expires_at": 0}'
+        with self._urlopen_returning(b"<html>sign in to the wifi</html>"):
+            with self.assertRaises(api.WithingsAPIError) as caught:
+                self._post_with_token_file(tokens)
+        self.assertNotIsInstance(caught.exception, api.WithingsAuthError)
+
+    def test_a_response_of_the_wrong_shape_is_reported_not_raised(self):
+        """A JSON array used to fail later at an attribute access."""
+        tokens = '{"access_token": "a", "refresh_token": "r", "expires_at": 0}'
+        with self._urlopen_returning(b'["not", "an", "object"]'):
+            with self.assertRaises(api.WithingsAuthError):
+                self._post_with_token_file(tokens)
+
+    def test_a_response_missing_its_body_is_reported_not_raised(self):
+        """Without the guard a KeyError reaches the same exception type.
+
+        auth is asserted directly so the test discriminates the guard from the
+        accident, rather than passing either way.
+        """
+        tokens = '{"access_token": "a", "refresh_token": "r", "expires_at": 0}'
+        with self._urlopen_returning(b'{"status": 0}'):
+            with self.assertRaises(RuntimeError) as caught:
+                with (
+                    patch.object(auth, "WITHINGS_TOKENS_PATH", self.dir / "withings_tokens.json"),
+                    patch.object(auth, "WITHINGS_CLIENT_PATH", self.dir / "withings_client.json"),
+                ):
+                    (self.dir / "withings_tokens.json").write_text(tokens)
+                    (self.dir / "withings_client.json").write_text(
+                        '{"client_id": "i", "client_secret": "s"}'
+                    )
+                    auth._cached_tokens = None
+                    auth._cached_creds = None
+                    auth.refresh_token()
+        self.assertNotIsInstance(caught.exception, auth.RefreshNetworkError)
+        self.assertIn("Token refresh failed", str(caught.exception))
+
+    def test_a_rate_limit_over_http_is_not_an_auth_failure(self):
+        """429 is a 4xx that carries no judgement on the credentials.
+
+        Answering it with re-authorisation turns a condition that clears
+        itself into a rotated token file on every host sharing it.
+        """
+        tokens = '{"access_token": "a", "refresh_token": "r", "expires_at": 0}'
+        with patch.object(auth.urllib.request, "urlopen", side_effect=self._http_error(429)):
+            with self.assertRaises(api.WithingsAPIError) as caught:
+                self._post_with_token_file(tokens)
+        self.assertNotIsInstance(caught.exception, api.WithingsAuthError)
+
+    def test_a_request_timeout_over_http_is_not_an_auth_failure(self):
+        tokens = '{"access_token": "a", "refresh_token": "r", "expires_at": 0}'
+        with patch.object(auth.urllib.request, "urlopen", side_effect=self._http_error(408)):
+            with self.assertRaises(api.WithingsAPIError) as caught:
+                self._post_with_token_file(tokens)
+        self.assertNotIsInstance(caught.exception, api.WithingsAuthError)
+
+    def test_a_rate_limit_in_the_body_is_not_an_auth_failure(self):
+        """The live path: Withings answers 200 with the outcome in the body.
+
+        api.post already calls 601/602 rate limiting for data requests; the
+        token endpoint is the same host and means the same thing by them.
+        """
+        tokens = '{"access_token": "a", "refresh_token": "r", "expires_at": 0}'
+        with self._urlopen_returning(b'{"status": 601}'):
+            with self.assertRaises(api.WithingsAPIError) as caught:
+                self._post_with_token_file(tokens)
+        self.assertNotIsInstance(caught.exception, api.WithingsAuthError)
+
+    def test_a_refusal_in_the_body_is_still_an_auth_failure(self):
+        tokens = '{"access_token": "a", "refresh_token": "r", "expires_at": 0}'
+        with self._urlopen_returning(b'{"status": 401}'):
+            with self.assertRaises(api.WithingsAuthError):
+                self._post_with_token_file(tokens)
+
+    def test_a_truncated_response_is_a_network_failure(self):
+        """http.client exceptions are not OSError, so they escaped everything."""
+        import http.client
+
+        tokens = '{"access_token": "a", "refresh_token": "r", "expires_at": 0}'
+        with patch.object(
+            auth.urllib.request, "urlopen", side_effect=http.client.IncompleteRead(b"partial")
+        ):
+            with self.assertRaises(api.WithingsAPIError) as caught:
+                self._post_with_token_file(tokens)
+        self.assertNotIsInstance(caught.exception, api.WithingsAuthError)
+
+    def test_an_undecodable_response_is_a_network_failure(self):
+        """A body that will not decode raises ValueError, which reads as auth."""
+        tokens = '{"access_token": "a", "refresh_token": "r", "expires_at": 0}'
+        with self._urlopen_returning(b"\xff\xfe not utf-8 at all"):
+            with self.assertRaises(api.WithingsAPIError) as caught:
+                self._post_with_token_file(tokens)
+        self.assertNotIsInstance(caught.exception, api.WithingsAuthError)
+
+    def test_an_unknown_body_status_is_not_treated_as_a_refusal(self):
+        """The default has to be the non-destructive direction.
+
+        api.post takes the same view of an unknown status for a data request.
+        """
+        tokens = '{"access_token": "a", "refresh_token": "r", "expires_at": 0}'
+        with self._urlopen_returning(b'{"status": 2555}'):
+            with self.assertRaises(api.WithingsAPIError) as caught:
+                self._post_with_token_file(tokens)
+        self.assertNotIsInstance(caught.exception, api.WithingsAuthError)
+
+    def test_a_bad_signature_is_treated_as_a_refusal(self):
+        tokens = '{"access_token": "a", "refresh_token": "r", "expires_at": 0}'
+        with self._urlopen_returning(b'{"status": 342}'):
+            with self.assertRaises(api.WithingsAuthError):
+                self._post_with_token_file(tokens)
+
+    def test_a_forbidden_response_is_treated_as_a_refusal(self):
+        tokens = '{"access_token": "a", "refresh_token": "r", "expires_at": 0}'
+        with patch.object(auth.urllib.request, "urlopen", side_effect=self._http_error(403)):
+            with self.assertRaises(api.WithingsAuthError):
+                self._post_with_token_file(tokens)
+
+
+class TestTheDataRequestTransport(unittest.TestCase):
+    """api.post's own request has the same exposure as the refresh.
+
+    Every other test in this file fails inside refresh_token, so nothing
+    reached this urlopen at all - widening its catch could have been reverted
+    with the suite still green.
+    """
+
+    def _post_with_a_working_token(self, urlopen_side_effect):
+        with (
+            patch.object(api, "refresh_token", return_value="token"),
+            patch.object(api.urllib.request, "urlopen", side_effect=urlopen_side_effect),
+        ):
+            return api.post("https://example.invalid/measure", {})
+
+    def test_a_read_timeout_is_reported_not_escaped(self):
+        with self.assertRaises(api.WithingsAPIError):
+            self._post_with_a_working_token(TimeoutError("timed out"))
+
+    def test_a_truncated_response_is_reported_not_escaped(self):
+        import http.client
+
+        with self.assertRaises(api.WithingsAPIError):
+            self._post_with_a_working_token(http.client.IncompleteRead(b"partial"))
+
+    def test_a_reset_connection_is_reported_not_escaped(self):
+        with self.assertRaises(api.WithingsAPIError):
+            self._post_with_a_working_token(ConnectionResetError("reset"))
 
 
 if __name__ == "__main__":

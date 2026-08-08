@@ -4,6 +4,7 @@ Withings auth codes expire in 30 seconds, so the code exchange MUST happen
 inside the HTTP callback handler, not after server shutdown.
 """
 
+import http.client
 import json
 import logging
 import os
@@ -29,6 +30,19 @@ from .config import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# The HTTP codes that mean the credentials themselves were refused. Anything
+# else - including 408, 425 and 429 - says the request did not get a verdict.
+_REFUSAL_CODES = frozenset({400, 401, 403})
+
+# In-body statuses that mean the credentials themselves were refused. Kept as
+# an allow-list because the default has to be the other way round: grading a
+# transient server condition as an auth failure tells the user to re-authorise,
+# which rewrites a token file other hosts share, while the opposite mistake
+# only under-advises. api.post takes the same view of an unknown status for a
+# data request, defaulting it to WithingsAPIError.
+_REFUSAL_STATUSES = frozenset({342, 401})
 
 
 class RefreshNetworkError(RuntimeError):
@@ -82,9 +96,21 @@ def _exchange_code(code, client_id, client_secret):
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
-            body = json.loads(resp.read().decode())
-    except urllib.error.URLError as e:
+            raw = resp.read().decode()
+    except (OSError, http.client.HTTPException, UnicodeDecodeError) as e:
+        # Wider than URLError: the body read happens after urlopen returns, so
+        # a stalled connection, a truncated response or an undecodable body all
+        # arrive unwrapped and would otherwise escape into the callback handler
+        # thread as a traceback.
         return None, f"Network error: {e}"
+
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        return None, "Token exchange failed (unreadable response)"
+
+    if not isinstance(body, dict):
+        return None, "Token exchange failed (unexpected response shape)"
 
     if body.get("status") != 0:
         return None, f"Token exchange failed (status {body.get('status')})"
@@ -108,7 +134,7 @@ def refresh_token() -> str:
     # A non-numeric expiry - hand-edited, or half-repaired - counts as expired
     # rather than raising on the comparison, so the refresh below decides.
     expires_at = _cached_tokens.get("expires_at", 0)
-    if not isinstance(expires_at, (int, float)) or isinstance(expires_at, bool):
+    if not isinstance(expires_at, (int, float)):
         expires_at = 0
     if time.time() < expires_at - 300:
         return _cached_tokens["access_token"]
@@ -131,16 +157,53 @@ def refresh_token() -> str:
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
-            body = json.loads(resp.read().decode())
-    except urllib.error.URLError as e:
+            raw = resp.read().decode()
+    except urllib.error.HTTPError as e:
+        # Checked before OSError, which it subclasses. Listed by what the code
+        # says about the credentials rather than by range: RFC 6749 refuses a
+        # bad grant with 400/401/403, while 408, 425 and 429 are 4xx that carry
+        # no judgement at all. Answering a rate limit with "re-authorise" turns
+        # a condition that clears itself into a rotated token file.
+        if e.code in _REFUSAL_CODES:
+            logger.error("Token refresh refused with HTTP %s", e.code)
+            raise RuntimeError("Token refresh failed. Run: withings-mcp auth") from e
+        logger.error("Token refresh got HTTP %s from the server", e.code)
+        raise RefreshNetworkError("Withings could not answer the refresh request.") from e
+    except (OSError, http.client.HTTPException, UnicodeDecodeError) as e:
+        # Wider than URLError on three counts: urlopen wraps only connect-phase
+        # failures in it, so a read timeout or reset arrives bare; a truncated
+        # or malformed response raises from http.client, which is not an
+        # OSError at all; and a body that will not decode raises ValueError,
+        # which the caller would otherwise read as a bad credential.
         logger.error("Token refresh could not reach the server")
         raise RefreshNetworkError("Could not reach Withings to refresh the token.") from e
 
-    if body.get("status") != 0:
-        logger.error("Token refresh returned status %s", body.get("status"))
+    try:
+        body = json.loads(raw)
+    except ValueError as e:
+        # A proxy or captive portal answering 200 with HTML is a network
+        # condition, not a rejected credential.
+        logger.error("Token refresh got a response that is not JSON")
+        raise RefreshNetworkError("Withings returned an unreadable response.") from e
+
+    if not isinstance(body, dict):
+        logger.error("Token refresh returned an unexpected response shape")
         raise RuntimeError("Token refresh failed. Run: withings-mcp auth")
 
-    new_tokens = body["body"]
+    # Withings answers over HTTP 200 with the real outcome in the body, so this
+    # is the live path and the HTTP codes above are the rare one.
+    status = body.get("status")
+    if status != 0:
+        if status in _REFUSAL_STATUSES:
+            logger.error("Token refresh refused with status %s", status)
+            raise RuntimeError("Token refresh failed. Run: withings-mcp auth")
+        logger.error("Token refresh returned status %s", status)
+        raise RefreshNetworkError("Withings could not complete the refresh.")
+
+    new_tokens = body.get("body")
+    if not isinstance(new_tokens, dict):
+        logger.error("Token refresh returned no token payload")
+        raise RuntimeError("Token refresh failed. Run: withings-mcp auth")
     _cached_tokens = {
         "access_token": new_tokens["access_token"],
         "refresh_token": new_tokens.get("refresh_token", _cached_tokens["refresh_token"]),
