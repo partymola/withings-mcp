@@ -1,12 +1,10 @@
-"""A gate for a mistake that has now happened twice.
+"""A structural check on the test files themselves.
 
-Appending a test class to a file whose `if __name__ == "__main__"` guard is
-already at the end leaves it after `unittest.main()`, which calls `sys.exit`
-before the class is defined. pytest still collects it, so CI stays green and
-the omission is invisible: the only symptom is a smaller count from a direct
-`python -m tests.<module>` run, which nobody watches.
-
-Vigilance did not catch it either time. This does.
+`unittest.main()` calls `sys.exit`, so anything defined after a module's
+`if __name__ == "__main__"` guard never runs under a direct
+`python -m tests.<module>` invocation. pytest still collects it, so the
+omission does not show up in CI: the only symptom is a smaller count from a
+runner nobody watches.
 """
 
 import ast
@@ -17,13 +15,22 @@ import pytest
 TEST_FILES = sorted(Path(__file__).parent.glob("test_*.py"))
 
 
+def _is_main_guard(node):
+    """True for any `if` whose test mentions __name__ and "__main__".
+
+    Written loosely on purpose: `__name__ == "__main__"`, the reversed
+    operands, and an `and`-extended condition all end the module the same way.
+    """
+    if not isinstance(node, ast.If):
+        return False
+    names = {n.id for n in ast.walk(node.test) if isinstance(n, ast.Name)}
+    constants = {c.value for c in ast.walk(node.test) if isinstance(c, ast.Constant)}
+    return "__name__" in names and "__main__" in constants
+
+
 def _guard_index(tree):
     for i, node in enumerate(tree.body):
-        if (
-            isinstance(node, ast.If)
-            and isinstance(node.test, ast.Compare)
-            and getattr(node.test.left, "id", None) == "__name__"
-        ):
+        if _is_main_guard(node):
             return i
     return None
 
@@ -34,13 +41,16 @@ def test_nothing_is_defined_after_the_main_guard(path):
     index = _guard_index(tree)
     if index is None:
         return  # No guard, nothing to hide behind.
-    after = [
-        node
-        for node in tree.body[index + 1 :]
+
+    # Walk rather than scan the top level: a class nested inside a `try` or an
+    # `if` after the guard is just as unreachable.
+    hidden = [
+        node.name
+        for parent in tree.body[index + 1 :]
+        for node in ast.walk(parent)
         if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
     ]
-    names = [node.name for node in after]
-    assert not names, (
-        f"{path.name} defines {names} after `if __name__ == '__main__'`, "
+    assert not hidden, (
+        f"{path.name} defines {hidden} after `if __name__ == '__main__'`, "
         "so a direct unittest run silently skips them"
     )
