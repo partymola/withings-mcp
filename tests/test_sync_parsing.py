@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from unittest.mock import patch
 
 from tests.fixtures import fake_measure_group, fake_sleep_summary
+from withings_mcp import auth
 from withings_mcp.db import SCHEMA
 from withings_mcp.tools import sync_tools
 
@@ -296,8 +297,8 @@ class TestSyncLogRecordsFailures(unittest.TestCase):
                 patch.object(
                     sync_tools.api,
                     "refresh_token",
-                    # Carries a path, so the assertion below can actually fail.
-                    side_effect=FileNotFoundError("/tmp/withings_tokens.json"),
+                    # A refusal carrying a path, so the note assertion can fail.
+                    side_effect=auth.TokenRefused("/tmp/withings_tokens.json"),
                 ),
                 patch.object(sync_tools.api.urllib.request, "urlopen"),
             ):

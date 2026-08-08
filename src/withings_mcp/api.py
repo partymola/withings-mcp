@@ -11,7 +11,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import urlencode
 
-from .auth import RefreshNetworkError, refresh_token
+from .auth import RefreshNetworkError, TokenRefused, refresh_token
 
 logger = logging.getLogger(__name__)
 
@@ -47,15 +47,15 @@ def post(url: str, params: dict, retries: int = 2) -> dict:
         # carry a path or file content into the sync log.
         try:
             token = refresh_token()
+        except TokenRefused as e:
+            raise WithingsAuthError(
+                "Could not obtain an access token. Run: withings-mcp auth"
+            ) from e
         except RefreshNetworkError as e:
             # Not an auth failure: an unreachable server says nothing about the
             # credentials, and advising re-auth would rotate a token file
             # another host may own.
             raise WithingsAPIError("Network error. Check your connection.") from e
-        except (RuntimeError, OSError, ValueError, KeyError) as e:
-            raise WithingsAuthError(
-                "Could not obtain an access token. Run: withings-mcp auth"
-            ) from e
 
         data = urlencode(params).encode()
         req = urllib.request.Request(

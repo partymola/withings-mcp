@@ -106,45 +106,61 @@ class TestApiPost(unittest.TestCase):
 
 
 class TestRefreshFailuresBecomeAuthErrors(unittest.TestCase):
-    """Failing to obtain a token is an auth failure, not an escaping error.
+    """api.post maps the two types refresh_token guarantees, and nothing else.
 
-    auth.refresh_token signals every one of its failures with a plain builtin,
-    so without this translation they pass through run_sync's handlers
-    untouched: nothing is written to sync_log, the connection is never closed,
-    and doctor reports a healthy log while syncing has been dead for weeks.
+    It used to catch a tuple of builtins, so the classification depended on
+    remembering every type auth could raise - which is how a bare OSError, an
+    http.client exception and a decode failure were each graded a dead
+    credential in turn.
     """
 
     def _post_with_refresh_raising(self, exc):
         with patch.object(api, "refresh_token", side_effect=exc):
             return api.post("https://example.invalid/measure", {})
 
-    def test_a_failed_refresh_becomes_an_auth_error(self):
+    def test_a_refusal_becomes_an_auth_error(self):
         with self.assertRaises(api.WithingsAuthError):
-            self._post_with_refresh_raising(RuntimeError("Token refresh failed"))
+            self._post_with_refresh_raising(auth.TokenRefused("revoked"))
 
-    def test_a_missing_token_file_becomes_an_auth_error(self):
-        with self.assertRaises(api.WithingsAuthError):
-            self._post_with_refresh_raising(FileNotFoundError("withings_tokens.json"))
+    def test_the_auth_message_is_fixed_text(self):
+        """sync_log stores this string, so nothing may be interpolated."""
+        with self.assertRaises(api.WithingsAuthError) as caught:
+            self._post_with_refresh_raising(auth.TokenRefused("/etc/secret/path is missing"))
+        self.assertEqual(
+            str(caught.exception), "Could not obtain an access token. Run: withings-mcp auth"
+        )
 
-    def test_a_malformed_token_file_becomes_an_auth_error(self):
-        with self.assertRaises(api.WithingsAuthError):
-            self._post_with_refresh_raising(json.JSONDecodeError("bad", "{", 0))
 
-    def test_a_token_file_missing_its_keys_becomes_an_auth_error(self):
-        with self.assertRaises(api.WithingsAuthError):
-            self._post_with_refresh_raising(KeyError("access_token"))
+class TestTheRefreshBoundary(unittest.TestCase):
+    """Every exit from refresh_token is one of two types, by construction."""
 
-    def test_an_unrelated_bug_is_not_disguised_as_an_auth_failure(self):
-        """Only the documented failure modes translate; a bug must stay a bug."""
-        with self.assertRaises(TypeError):
-            self._post_with_refresh_raising(TypeError("someone changed a signature"))
+    def _refresh_with_worker_raising(self, exc):
+        with patch.object(auth, "_refresh_token", side_effect=exc):
+            return auth.refresh_token()
 
-    def test_the_reported_message_carries_no_file_content(self):
-        """sync_log stores this string, so it must not echo what was read."""
-        with patch.object(api, "refresh_token", side_effect=FileNotFoundError("/etc/secret/path")):
-            with self.assertRaises(api.WithingsAuthError) as caught:
-                api.post("https://example.invalid/measure", {})
-        assert "/etc/secret/path" not in str(caught.exception)
+    def test_an_unclassified_failure_becomes_a_network_error(self):
+        import http.client
+
+        for exc in (
+            TimeoutError("bare timeout"),
+            ConnectionResetError("reset"),
+            UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid"),
+            KeyError("access_token"),
+            ValueError("unparseable"),
+            RuntimeError("something nobody classified"),
+            http.client.BadStatusLine("garbage"),
+        ):
+            with self.subTest(exc=type(exc).__name__):
+                with self.assertRaises(auth.RefreshNetworkError):
+                    self._refresh_with_worker_raising(exc)
+
+    def test_a_refusal_is_passed_through_unchanged(self):
+        with self.assertRaises(auth.TokenRefused):
+            self._refresh_with_worker_raising(auth.TokenRefused("revoked"))
+
+    def test_the_boundary_does_not_swallow_a_successful_refresh(self):
+        with patch.object(auth, "_refresh_token", return_value="a-token"):
+            self.assertEqual(auth.refresh_token(), "a-token")
 
 
 class TestNetworkFailureIsNotAnAuthFailure(unittest.TestCase):
@@ -391,11 +407,13 @@ class TestAgainstTheRealRefresh(unittest.TestCase):
             with self.assertRaises(api.WithingsAuthError):
                 self._post_with_token_file(tokens)
 
-    def test_a_forbidden_response_is_treated_as_a_refusal(self):
+    def test_a_forbidden_response_is_not_treated_as_a_refusal(self):
+        """403 is what a WAF returns; it says nothing about the grant."""
         tokens = '{"access_token": "a", "refresh_token": "r", "expires_at": 0}'
         with patch.object(auth.urllib.request, "urlopen", side_effect=self._http_error(403)):
-            with self.assertRaises(api.WithingsAuthError):
+            with self.assertRaises(api.WithingsAPIError) as caught:
                 self._post_with_token_file(tokens)
+        self.assertNotIsInstance(caught.exception, api.WithingsAuthError)
 
 
 class TestTheDataRequestTransport(unittest.TestCase):

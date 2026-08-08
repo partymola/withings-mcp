@@ -32,9 +32,10 @@ from .config import (
 logger = logging.getLogger(__name__)
 
 
-# The HTTP codes that mean the credentials themselves were refused. Anything
-# else - including 408, 425 and 429 - says the request did not get a verdict.
-_REFUSAL_CODES = frozenset({400, 401, 403})
+# RFC 6749 defines the token endpoint's refusals as 400, with 401 for a bad
+# client. 403 is deliberately absent: a WAF or bot-protection block returns it
+# with no opinion about the grant.
+_REFUSAL_CODES = frozenset({400, 401})
 
 # In-body statuses that mean the credentials themselves were refused. Kept as
 # an allow-list because the default has to be the other way round: grading a
@@ -43,6 +44,14 @@ _REFUSAL_CODES = frozenset({400, 401, 403})
 # only under-advises. api.post takes the same view of an unknown status for a
 # data request, defaulting it to WithingsAPIError.
 _REFUSAL_STATUSES = frozenset({342, 401})
+
+
+class TokenRefused(RuntimeError):
+    """The server judged the credentials and rejected them.
+
+    The only failure that warrants telling the user to re-authorise, which
+    rewrites a token file other hosts may share.
+    """
 
 
 class RefreshNetworkError(RuntimeError):
@@ -67,15 +76,19 @@ def _save_json(path, data):
 
 
 def _load_json(path):
-    """Read a credential file, guaranteeing a dict or a clear failure.
+    """Read a credential file as a dict, or say why the credentials are unusable.
 
-    A file holding valid JSON that is not an object (a list, a bare string)
-    would otherwise fail later at an attribute access, in a shape the caller
-    cannot classify.
+    Classified here rather than left to the caller: a file that is absent,
+    unreadable or not a JSON object means there are no usable credentials,
+    which is a refusal - unlike a transport failure it will not clear on its
+    own, and the user does have to re-authorise.
     """
-    data = json.loads(path.read_text())
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError) as e:
+        raise TokenRefused(f"{path.name} is missing or unreadable. Run: withings-mcp auth") from e
     if not isinstance(data, dict):
-        raise RuntimeError(f"{path.name} is malformed. Run: withings-mcp auth")
+        raise TokenRefused(f"{path.name} is malformed. Run: withings-mcp auth")
     return data
 
 
@@ -118,7 +131,7 @@ def _exchange_code(code, client_id, client_secret):
     return body.get("body"), None
 
 
-def refresh_token() -> str:
+def _refresh_token() -> str:
     """Return a valid access token, refreshing if expired.
 
     Checks expiry with a 5-minute buffer. If expired, uses the refresh_token
@@ -141,7 +154,7 @@ def refresh_token() -> str:
 
     if not _cached_tokens.get("refresh_token"):
         logger.error("Token expired and no refresh token. Run: withings-mcp auth")
-        raise RuntimeError("Token expired and no refresh token. Run: withings-mcp auth")
+        raise TokenRefused("Token expired and no refresh token. Run: withings-mcp auth")
 
     data = urlencode(
         {
@@ -166,7 +179,7 @@ def refresh_token() -> str:
         # a condition that clears itself into a rotated token file.
         if e.code in _REFUSAL_CODES:
             logger.error("Token refresh refused with HTTP %s", e.code)
-            raise RuntimeError("Token refresh failed. Run: withings-mcp auth") from e
+            raise TokenRefused("Token refresh failed. Run: withings-mcp auth") from e
         logger.error("Token refresh got HTTP %s from the server", e.code)
         raise RefreshNetworkError("Withings could not answer the refresh request.") from e
     except (OSError, http.client.HTTPException, UnicodeDecodeError) as e:
@@ -188,7 +201,7 @@ def refresh_token() -> str:
 
     if not isinstance(body, dict):
         logger.error("Token refresh returned an unexpected response shape")
-        raise RuntimeError("Token refresh failed. Run: withings-mcp auth")
+        raise TokenRefused("Token refresh failed. Run: withings-mcp auth")
 
     # Withings answers over HTTP 200 with the real outcome in the body, so this
     # is the live path and the HTTP codes above are the rare one.
@@ -196,14 +209,14 @@ def refresh_token() -> str:
     if status != 0:
         if status in _REFUSAL_STATUSES:
             logger.error("Token refresh refused with status %s", status)
-            raise RuntimeError("Token refresh failed. Run: withings-mcp auth")
+            raise TokenRefused("Token refresh failed. Run: withings-mcp auth")
         logger.error("Token refresh returned status %s", status)
         raise RefreshNetworkError("Withings could not complete the refresh.")
 
     new_tokens = body.get("body")
     if not isinstance(new_tokens, dict):
         logger.error("Token refresh returned no token payload")
-        raise RuntimeError("Token refresh failed. Run: withings-mcp auth")
+        raise TokenRefused("Token refresh failed. Run: withings-mcp auth")
     _cached_tokens = {
         "access_token": new_tokens["access_token"],
         "refresh_token": new_tokens.get("refresh_token", _cached_tokens["refresh_token"]),
@@ -212,6 +225,30 @@ def refresh_token() -> str:
     }
     _save_json(WITHINGS_TOKENS_PATH, _cached_tokens)
     return _cached_tokens["access_token"]
+
+
+def refresh_token() -> str:
+    """Return a valid access token, refreshing if expired.
+
+    The boundary that classifies every way obtaining a token can fail. Only
+    TokenRefused means the credentials were rejected; everything else becomes
+    RefreshNetworkError, by construction rather than by listing the exception
+    types that happen to occur. Enumerating them is what went wrong before:
+    each round of fixes found another type nobody had thought of - a bare
+    OSError, an http.client exception that is not an OSError at all, a decode
+    failure that is a ValueError - and each was graded a dead credential.
+
+    A bug inside the refresh therefore reports as a network failure rather
+    than a refusal. That is the safe direction: it is still recorded and still
+    visible, and it does not tell anyone to rotate a shared token file.
+    """
+    try:
+        return _refresh_token()
+    except (TokenRefused, RefreshNetworkError):
+        raise
+    except Exception as e:
+        logger.error("Token refresh failed: %s", type(e).__name__)
+        raise RefreshNetworkError("Could not obtain a token from Withings.") from e
 
 
 def setup_auth():
