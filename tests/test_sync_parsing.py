@@ -8,7 +8,9 @@ against an in-memory database with the API mocked. All input comes from the
 fictional tests.fixtures factories.
 """
 
+import os
 import sqlite3
+import tempfile
 import unittest
 from datetime import datetime, timezone
 from unittest.mock import patch
@@ -233,3 +235,57 @@ class TestSyncSleep(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSyncLogRecordsFailures(unittest.TestCase):
+    """Every failure a run_sync call swallows must leave a row in sync_log.
+
+    Nothing re-reports a failed sync afterwards: queries keep serving the
+    cache, so an auth failure that is not logged leaves no record anywhere
+    that syncing stopped.
+    """
+
+    def _run_sync_raising(self, exc):
+        """run_sync closes its connection, so the log is read back from a file."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "withings.db")
+            conn = sqlite3.connect(path)
+            conn.row_factory = sqlite3.Row
+            conn.executescript(SCHEMA)
+            with (
+                patch.object(sync_tools.db, "get_db", return_value=conn),
+                patch.object(sync_tools, "_sync_body", side_effect=exc),
+            ):
+                results = sync_tools.run_sync(["body"])
+
+            reopened = sqlite3.connect(path)
+            reopened.row_factory = sqlite3.Row
+            rows = reopened.execute("SELECT data_type, status FROM sync_log").fetchall()
+            reopened.close()
+        return results, rows
+
+    def test_auth_failure_is_logged(self):
+        results, rows = self._run_sync_raising(sync_tools.api.WithingsAuthError("denied"))
+        self.assertEqual(results["body"]["status"], "auth_error")
+        self.assertEqual([(r["data_type"], r["status"]) for r in rows], [("body", "auth_error")])
+
+    def test_api_failure_is_logged(self):
+        _, rows = self._run_sync_raising(sync_tools.api.WithingsAPIError("boom"))
+        self.assertEqual([(r["data_type"], r["status"]) for r in rows], [("body", "error")])
+
+    def test_rate_limit_is_logged(self):
+        _, rows = self._run_sync_raising(sync_tools.api.WithingsRateLimitError("slow down"))
+        self.assertEqual([(r["data_type"], r["status"]) for r in rows], [("body", "partial")])
+
+    def test_a_logged_failure_does_not_advance_the_resume_cursor(self):
+        """Logging failures must not move the backfill start date.
+
+        run_sync resumes from get_last_sync, so if a failure row counted as
+        progress, the days it failed on would never be fetched again.
+        """
+        conn = make_conn()
+        sync_tools.db.log_sync(conn, "body", "ok", 1)
+        good = conn.execute("SELECT synced_at FROM sync_log").fetchone()["synced_at"]
+        for status in ("auth_error", "error", "partial"):
+            sync_tools.db.log_sync(conn, "body", status, notes="later but not progress")
+        self.assertEqual(sync_tools.db.get_last_sync(conn, "body"), good)

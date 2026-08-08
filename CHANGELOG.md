@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   The command is offline and makes no API call, so it costs no rate-limit quota and cannot disturb a token another host is using. It never creates or modifies anything - notably it will not create the database, so a wrong `WITHINGS_MCP_DB_PATH` still reports as missing rather than being silently created empty. No credential value appears in the output. Exit status is non-zero when something needs fixing.
 
+### Fixed
+
+- An authentication failure during sync is now recorded in `sync_log`. Rate-limit and API errors were logged and auth errors were not, so the one failure that stops syncing indefinitely was the one leaving no trace: the run reported it once, and afterwards queries carried on serving the cache with nothing anywhere saying why it had stopped growing. The resume cursor is unaffected - it only advances on a successful sync.
+
 ### Packaging
 
 - The container image is built on Python 3.14 instead of 3.13, and 3.14 joins the supported-version classifiers. `requires-python` is unchanged at `>=3.13`: the package still supports both, and only the published image moves. Installing from PyPI is unaffected - that uses whichever Python the user already has.

@@ -86,6 +86,7 @@ def run_sync(types: list[str], days: int = 30) -> dict:
             db.log_sync(conn, dtype, "partial", notes="rate limited")
             results[dtype] = {"status": "rate_limited", "message": "Retry in 60 seconds."}
         except api.WithingsAuthError as e:
+            db.log_sync(conn, dtype, "auth_error", notes=str(e))
             results[dtype] = {"status": "auth_error", "message": str(e)}
         except api.WithingsAPIError as e:
             db.log_sync(conn, dtype, "error", notes=str(e))
