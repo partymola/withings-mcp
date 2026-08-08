@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-08
+
 ### Added
 
 - `withings-mcp doctor` checks a setup and reports what needs fixing. It resolves and prints the config and database paths actually in use and where each came from, validates the credential files by shape, and reads the database read-only for schema drift, corruption and how current the cache is. It also reports failures recorded in the sync log - otherwise the only record that syncing stopped weeks ago while queries carried on serving an ageing cache.
@@ -70,7 +72,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ECG and AFib detection support via `withings_get_heart` (live, not cached).
 - Pre-commit hook (`scripts/check-no-data.sh`) blocking commit of databases, tokens, and other secrets.
 
-[Unreleased]: https://github.com/partymola/withings-mcp/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/partymola/withings-mcp/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/partymola/withings-mcp/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/partymola/withings-mcp/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/partymola/withings-mcp/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/partymola/withings-mcp/compare/v0.2.0...v0.2.1
