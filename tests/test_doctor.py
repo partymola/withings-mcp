@@ -612,9 +612,12 @@ class TestSyncLogAcrossTypes:
 
 class TestIntegrityCheck:
     def test_a_failed_integrity_check_is_reported_as_such(self, setup):
-        """A corrupted page still opens, so this branch needs a real one.
+        """A damaged leaf page still opens, so this branch needs a real one.
 
-        Garbage bytes fail the schema query instead and never reach it.
+        Garbage bytes fail earlier, at the schema query, and never reach it. The
+        last page is used deliberately: page 1 holds the file header and the
+        schema, and damaging those makes SQLite refuse the file outright, which
+        is the other branch.
         """
         _, db_path = setup
         conn = db.get_db(db_path)
@@ -624,12 +627,14 @@ class TestIntegrityCheck:
                 ("2026-03-10", f"2026-03-10T{i:04d}", "2026-03-10T01:00:00", i),
             )
         conn.commit()
+        page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+        page_count = conn.execute("PRAGMA page_count").fetchone()[0]
         conn.close()
+        assert page_count > 2, "need a leaf page beyond the schema"
 
-        page_size = 4096
         raw = bytearray(db_path.read_bytes())
-        assert len(raw) > page_size * 2, "need more than two pages to corrupt one"
-        raw[page_size * 2 : page_size * 2 + 200] = b"\xff" * 200
+        last = (page_count - 1) * page_size
+        raw[last : last + page_size] = b"\xa5" * page_size
         db_path.write_bytes(raw)
 
         findings = doctor.check_database()
