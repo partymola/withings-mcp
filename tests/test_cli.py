@@ -132,3 +132,39 @@ def test_sync_subcommand_exits_nonzero_when_a_type_fails():
             main.main()
 
     assert exc_info.value.code == 1
+
+
+def test_doctor_subcommand_exits_with_the_check_status():
+    with (
+        patch("sys.argv", ["withings-mcp", "doctor"]),
+        patch("withings_mcp.doctor.run_doctor", Mock(return_value=1)) as run_doctor,
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            main.main()
+
+    assert exc_info.value.code == 1
+    run_doctor.assert_called_once_with()
+
+
+def test_doctor_subcommand_exits_zero_on_a_healthy_setup():
+    with (
+        patch("sys.argv", ["withings-mcp", "doctor"]),
+        patch("withings_mcp.doctor.run_doctor", Mock(return_value=0)),
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            main.main()
+
+    assert exc_info.value.code == 0
+
+
+def test_doctor_subcommand_does_not_start_server():
+    run_mock = Mock()
+    with (
+        patch("sys.argv", ["withings-mcp", "doctor"]),
+        patch("withings_mcp.doctor.run_doctor", Mock(return_value=0)),
+        patch.object(main.mcp, "run", run_mock),
+    ):
+        with pytest.raises(SystemExit):
+            main.main()
+
+    run_mock.assert_not_called()

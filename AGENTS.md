@@ -23,7 +23,7 @@ The `scripts/check-no-data.sh` pre-commit hook rejects database files, config se
 
 ## Architecture
 
-- **Entry point**: `src/main.py` - routes `auth`/`sync` subcommands or starts the MCP stdio server
+- **Entry point**: `src/main.py` - routes `auth`/`sync`/`doctor` subcommands or starts the MCP stdio server
 - **MCP server**: `mcp_instance.py` creates the shared `MCPServer("withings-mcp")` instance
 - **Auth**: `auth.py` - OAuth with a 30-second inline code exchange in the callback handler, token refresh with a 5-min buffer. Redirect `http://localhost:8585`; scopes `user.info,user.metrics,user.activity`; access tokens 3h, refresh tokens 1 year
 - **API**: `api.py` - POST wrapper that handles Withings' status-in-body errors, typed exceptions
@@ -31,6 +31,7 @@ The `scripts/check-no-data.sh` pre-commit hook rejects database files, config se
 - **Tools**: `tools/` - domain-grouped modules
 - **Helpers**: `helpers.py` - value parsing, date coercion, formatting; `MEASURE_TYPES` and `WORKOUT_CATEGORIES` constants live here
 - **Config**: env vars `WITHINGS_MCP_CONFIG_DIR`, `WITHINGS_MCP_DB_PATH`
+- **Doctor**: `doctor.py` - the `doctor` subcommand. Every check is offline and read-only, and two properties are load-bearing rather than incidental: it never opens the database through `db.get_db()` (which would create it and destroy the evidence for the wrong-path and stale-cache checks), and it imports only `config` and `db` - never `auth` or `api`, so no code path can spend the refresh token another host owns. Both are pinned by tests in `tests/test_doctor.py`; keep them true when adding a check
 
 ## Database schema
 

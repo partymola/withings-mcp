@@ -97,6 +97,7 @@ You can also sync from the command line without an MCP client:
 withings-mcp              Start the MCP server (stdio transport)
 withings-mcp auth         Interactive OAuth setup (opens the browser)
 withings-mcp sync         Sync data to the local cache (--types, --days)
+withings-mcp doctor       Check the setup and report what needs fixing
 withings-mcp --version    Print the installed package version
 ```
 

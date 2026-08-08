@@ -5,6 +5,7 @@ Usage:
     withings-mcp --version    Print the installed package version
     withings-mcp auth         Interactive OAuth setup
     withings-mcp sync         Sync data to local cache
+    withings-mcp doctor       Check the setup and report what needs fixing
 """
 
 import argparse
@@ -55,6 +56,11 @@ def main():
     auth_parser = subparsers.add_parser("auth", help="Interactive OAuth setup")
     _add_version_argument(auth_parser)
 
+    doctor_parser = subparsers.add_parser(
+        "doctor", help="Check the setup and report what needs fixing"
+    )
+    _add_version_argument(doctor_parser)
+
     sync_parser = subparsers.add_parser("sync", help="Sync Withings data to local SQLite cache")
     _add_version_argument(sync_parser)
     sync_parser.add_argument(
@@ -72,6 +78,10 @@ def main():
         from withings_mcp.auth import setup_auth
 
         setup_auth()
+    elif args.cmd == "doctor":
+        from withings_mcp.doctor import run_doctor
+
+        sys.exit(run_doctor())
     elif args.cmd == "sync":
         types = [t.strip() for t in args.types.split(",")]
         if "all" in types:
