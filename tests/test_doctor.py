@@ -11,6 +11,7 @@ putting token-shaped strings in it would invite exactly the confusion its rule
 exists to prevent. No measurement value appears in this file.
 """
 
+import contextlib
 import json
 import os
 import sqlite3
@@ -611,36 +612,48 @@ class TestSyncLogAcrossTypes:
 
 
 class TestIntegrityCheck:
-    def test_a_failed_integrity_check_is_reported_as_such(self, setup):
-        """A damaged leaf page still opens, so this branch needs a real one.
+    """A database that opens but reports damage is its own case.
 
-        Garbage bytes fail earlier, at the schema query, and never reach it. The
-        last page is used deliberately: page 1 holds the file header and the
-        schema, and damaging those makes SQLite refuse the file outright, which
-        is the other branch.
-        """
+    Not tested with a real corrupted file on purpose: whether SQLite answers a
+    damaged page by returning a row from PRAGMA integrity_check or by raising
+    depends on the library build, so a manufactured corruption pins the
+    platform rather than this code. Both routes end in FAIL - the other one is
+    covered by test_a_file_that_is_not_a_database_still_says_so.
+    """
+
+    def test_a_non_ok_integrity_result_is_reported_as_such(self, setup, monkeypatch):
         _, db_path = setup
-        conn = db.get_db(db_path)
-        for i in range(400):
-            conn.execute(
-                "INSERT INTO workouts (date, startdate, enddate, category) VALUES (?, ?, ?, ?)",
-                ("2026-03-10", f"2026-03-10T{i:04d}", "2026-03-10T01:00:00", i),
-            )
-        conn.commit()
-        page_size = conn.execute("PRAGMA page_size").fetchone()[0]
-        page_count = conn.execute("PRAGMA page_count").fetchone()[0]
-        conn.close()
-        assert page_count > 2, "need a leaf page beyond the schema"
+        db.get_db(db_path).close()
+        real_open = doctor._open_db_readonly
 
-        raw = bytearray(db_path.read_bytes())
-        last = (page_count - 1) * page_size
-        raw[last : last + page_size] = b"\xa5" * page_size
-        db_path.write_bytes(raw)
+        class _DamagedReport:
+            """Passes queries through, but answers integrity_check with damage."""
 
+            def __init__(self, conn):
+                self._conn = conn
+
+            def execute(self, sql, *args):
+                if "integrity_check" in sql:
+                    return _OneRow(("row 42 missing from index idx_workout_date",))
+                return self._conn.execute(sql, *args)
+
+        class _OneRow:
+            def __init__(self, row):
+                self._row = row
+
+            def fetchone(self):
+                return self._row
+
+        @contextlib.contextmanager
+        def damaged(path):
+            with real_open(path) as conn:
+                yield _DamagedReport(conn)
+
+        monkeypatch.setattr(doctor, "_open_db_readonly", damaged)
         findings = doctor.check_database()
-        detail = " ".join(f.detail for f in _named(findings, "database"))
+
         assert doctor.FAIL in _severities(findings, "database")
-        assert "integrity check" in detail
+        assert "integrity check" in " ".join(f.detail for f in _named(findings, "database"))
 
 
 class TestConfigPathSource:
