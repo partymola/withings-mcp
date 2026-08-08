@@ -10,7 +10,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import urlencode
 
-from .auth import refresh_token
+from .auth import RefreshNetworkError, refresh_token
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,22 @@ def post(url: str, params: dict, retries: int = 2) -> dict:
     Returns the 'body' field from the response.
     """
     for attempt in range(retries):
-        token = refresh_token()
+        # refresh_token reports its documented failures with builtins, which
+        # run_sync does not classify; translated here, at its only call site.
+        # The messages are fixed rather than built from the original, which can
+        # carry a path or file content into the sync log.
+        try:
+            token = refresh_token()
+        except RefreshNetworkError as e:
+            # Not an auth failure: an unreachable server says nothing about the
+            # credentials, and advising re-auth would rotate a token file
+            # another host may own.
+            raise WithingsAPIError("Network error. Check your connection.") from e
+        except (RuntimeError, OSError, ValueError, KeyError) as e:
+            raise WithingsAuthError(
+                "Could not obtain an access token. Run: withings-mcp auth"
+            ) from e
+
         data = urlencode(params).encode()
         req = urllib.request.Request(
             url,

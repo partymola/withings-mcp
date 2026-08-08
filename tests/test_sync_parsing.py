@@ -269,16 +269,49 @@ class TestSyncLogRecordsFailures(unittest.TestCase):
         _, rows = self._run_sync_raising(sync_tools.api.WithingsAPIError("boom"))
         self.assertEqual([(r["data_type"], r["status"]) for r in rows], [("body", "error")])
 
-    def test_a_rejected_refresh_is_not_logged_and_propagates(self):
-        """The boundary of what this class covers, pinned rather than assumed.
+    def test_a_bug_inside_a_sync_still_propagates(self):
+        """Only a failure to obtain a token is reclassified, not any error.
 
-        A revoked or missing refresh token raises RuntimeError from auth, which
-        run_sync does not catch, so no row is written and the caller sees the
-        exception. Widening the catch here without deciding what to log would
-        silently change that.
+        A RuntimeError raised by sync code is a bug, and must not be logged as
+        though authentication had failed.
         """
         with self.assertRaises(RuntimeError):
-            self._run_sync_raising(RuntimeError("Token refresh failed"))
+            self._run_sync_raising(RuntimeError("someone changed a signature"))
+
+    def test_a_revoked_refresh_token_is_logged_rather_than_escaping(self):
+        """The commonest way syncing dies, end to end through api.post.
+
+        auth.refresh_token raises a plain RuntimeError; api translates it, and
+        run_sync's existing handler records it. Before that translation the
+        exception left run_sync entirely, so nothing reached sync_log and the
+        connection was never closed.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "withings.db")
+            conn = sqlite3.connect(path)
+            conn.row_factory = sqlite3.Row
+            conn.executescript(SCHEMA)
+            with (
+                patch.object(sync_tools.db, "get_db", return_value=conn),
+                patch.object(
+                    sync_tools.api,
+                    "refresh_token",
+                    # Carries a path, so the assertion below can actually fail.
+                    side_effect=FileNotFoundError("/tmp/withings_tokens.json"),
+                ),
+                patch.object(sync_tools.api.urllib.request, "urlopen"),
+            ):
+                results = sync_tools.run_sync(["body"])
+
+            reopened = sqlite3.connect(path)
+            reopened.row_factory = sqlite3.Row
+            rows = reopened.execute("SELECT data_type, status, notes FROM sync_log").fetchall()
+            reopened.close()
+
+        self.assertEqual(results["body"]["status"], "auth_error")
+        self.assertEqual([(r["data_type"], r["status"]) for r in rows], [("body", "auth_error")])
+        # The stored note must not carry anything read off disk.
+        self.assertNotIn("/", rows[0]["notes"] or "")
 
     def test_rate_limit_is_logged(self):
         _, rows = self._run_sync_raising(sync_tools.api.WithingsRateLimitError("slow down"))

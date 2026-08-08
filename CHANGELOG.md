@@ -17,9 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- An authentication failure reported by the Withings API - a request still refused after a token refresh and retry - is now recorded in `sync_log` with status `auth_error`. Rate-limit and API errors were already logged and this one was not, so it passed through the sync run and left nothing behind: queries carried on serving the cache with no record of why it had stopped growing. The resume cursor is unaffected, since it only advances on a successful sync.
-
-  This does not cover every way authentication can fail. A refresh that is itself rejected - a revoked or expired refresh token, or a missing token file - raises before the sync loop can classify it, and still leaves no row. That path is unchanged here.
+- An authentication failure during sync is now recorded in `sync_log` with status `auth_error`. Rate-limit and API errors were already logged and this one was not, so it passed through the sync run and left nothing behind: queries carried on serving the cache with no record of why it had stopped growing. The resume cursor is unaffected, since it only advances on a successful sync.
+- A failure to obtain an access token is now an authentication failure rather than an escaping error. Token refresh reported its failures with plain builtins, which the sync loop does not classify, so the commonest way syncing dies - a revoked or expired refresh token - left no log row at all and its database connection unclosed. This covers a refresh the server rejects, and a token file that is missing, unparseable, of the wrong shape, or carrying a non-numeric expiry. Failures are translated where the token is requested, so a genuine bug elsewhere still surfaces as one instead of being filed as an auth problem.
+- A refresh that cannot reach Withings is reported as a network error, not an authentication one. Being unable to contact the server says nothing about whether the credentials are still valid, and the auth classification would have answered a dropped connection with "run `withings-mcp auth`" - re-authorising for no reason, and rewriting a token file another host may share.
 
 ### Packaging
 

@@ -30,6 +30,17 @@ from .config import (
 
 logger = logging.getLogger(__name__)
 
+
+class RefreshNetworkError(RuntimeError):
+    """The refresh request never got an answer.
+
+    Subclasses RuntimeError so existing callers are unaffected, but is
+    distinguishable: an unreachable server says nothing about whether the
+    credentials are still good, and telling the user to re-authorise would
+    rotate a token file another host may own.
+    """
+
+
 # In-memory token cache to avoid re-reading JSON files on every API call
 _cached_tokens = None
 _cached_creds = None
@@ -42,7 +53,16 @@ def _save_json(path, data):
 
 
 def _load_json(path):
-    return json.loads(path.read_text())
+    """Read a credential file, guaranteeing a dict or a clear failure.
+
+    A file holding valid JSON that is not an object (a list, a bare string)
+    would otherwise fail later at an attribute access, in a shape the caller
+    cannot classify.
+    """
+    data = json.loads(path.read_text())
+    if not isinstance(data, dict):
+        raise RuntimeError(f"{path.name} is malformed. Run: withings-mcp auth")
+    return data
 
 
 def _exchange_code(code, client_id, client_secret):
@@ -85,7 +105,11 @@ def refresh_token() -> str:
     if _cached_creds is None:
         _cached_creds = _load_json(WITHINGS_CLIENT_PATH)
 
+    # A non-numeric expiry - hand-edited, or half-repaired - counts as expired
+    # rather than raising on the comparison, so the refresh below decides.
     expires_at = _cached_tokens.get("expires_at", 0)
+    if not isinstance(expires_at, (int, float)) or isinstance(expires_at, bool):
+        expires_at = 0
     if time.time() < expires_at - 300:
         return _cached_tokens["access_token"]
 
@@ -109,8 +133,8 @@ def refresh_token() -> str:
         with urllib.request.urlopen(req, timeout=15) as resp:
             body = json.loads(resp.read().decode())
     except urllib.error.URLError as e:
-        logger.error("Token refresh failed: %s", e)
-        raise RuntimeError("Token refresh failed. Run: withings-mcp auth") from e
+        logger.error("Token refresh could not reach the server")
+        raise RefreshNetworkError("Could not reach Withings to refresh the token.") from e
 
     if body.get("status") != 0:
         logger.error("Token refresh returned status %s", body.get("status"))
