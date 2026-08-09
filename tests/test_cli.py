@@ -5,7 +5,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-import main
+from withings_mcp import cli as main
 
 
 def test_version_flag_prints_package_version(capsys):
