@@ -515,3 +515,44 @@ class TestSetupAuthSurvivesABrokenClientFile:
             '{"client_id": "abc", "client_secret": "def"}', tmp_path, monkeypatch
         )
         assert "Re-use" in prompts[0]
+
+
+class TestTheCallbackPageEscapesWhatItShows:
+    """One of the four callers builds its message from a query parameter.
+
+    Escaped at the sink rather than at that caller, so a fifth caller does
+    not have to remember. The state check runs first, so whoever supplies
+    the parameter knows the per-run token - which does not rule out
+    Withings itself, or an intermediary in the redirect chain, since a
+    denial legitimately comes back with the correct state.
+    """
+
+    def test_a_script_tag_is_escaped(self):
+        page = auth._callback_page('Error: <script>alert("x")</script>')
+        assert "<script>" not in page
+        assert "&lt;script&gt;" in page
+
+    def test_an_ordinary_message_still_reads_normally(self):
+        assert "Authorised! You can close this tab." in auth._callback_page(
+            "Authorised! You can close this tab."
+        )
+
+    def test_the_handler_builds_its_page_through_the_helper(self):
+        """The helper being correct is no use if _respond stops calling it."""
+        import ast
+        import inspect
+
+        tree = ast.parse(inspect.getsource(auth.setup_auth))
+        writes = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "write"
+            and isinstance(node.func.value, ast.Attribute)
+            and node.func.value.attr == "wfile"
+        ]
+        assert writes, "no wfile.write found - has the callback handler moved?"
+        for write in writes:
+            source = ast.unparse(write)
+            assert "_callback_page(" in source, f"unescaped page built at: {source}"

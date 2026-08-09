@@ -4,6 +4,7 @@ Withings auth codes expire in 30 seconds, so the code exchange MUST happen
 inside the HTTP callback handler, not after server shutdown.
 """
 
+import html
 import http.client
 import json
 import logging
@@ -282,6 +283,16 @@ def refresh_token() -> str:
         raise RefreshNetworkError("Could not obtain a token from Withings.") from e
 
 
+def _callback_page(message):
+    """Build the page the OAuth callback returns.
+
+    Escaped at the sink rather than at each caller: one of the four builds
+    its message from a callback query parameter, and a fifth caller would
+    otherwise have to remember.
+    """
+    return f"<html><body><h2>{html.escape(message)}</h2></body></html>"
+
+
 def setup_auth():
     """Interactive OAuth setup. Prompts for credentials, opens browser, exchanges code."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -358,7 +369,7 @@ def setup_auth():
             self.send_response(status_code)
             self.send_header("Content-Type", "text/html")
             self.end_headers()
-            self.wfile.write(f"<html><body><h2>{message}</h2></body></html>".encode())
+            self.wfile.write(_callback_page(message).encode())
 
         def log_message(self, format, *args):
             pass
