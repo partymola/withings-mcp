@@ -119,6 +119,10 @@ def post(url: str, params: dict, retries: int = 2) -> dict:
                 "Rate limited by Withings API. Retry in 60 seconds or reduce request frequency."
             )
 
-        raise WithingsAPIError(f"Withings API error (status {status}).")
+        # Only a recognisable status code is repeated back: this message reaches
+        # sync_log and the model, and the value came from the response body.
+        if isinstance(status, int) and not isinstance(status, bool):
+            raise WithingsAPIError(f"Withings API error (status {status}).")
+        raise WithingsAPIError("Withings API error (unrecognised status).")
 
     raise WithingsAuthError("Authentication failed after retry. Run: withings-mcp auth")

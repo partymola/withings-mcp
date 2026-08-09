@@ -790,4 +790,7 @@ def test_the_diagnostic_agrees_with_what_saving_actually_does(tmp_path, dir_mode
     if findings:
         detail = findings[0].detail
         assert "write and execute" in detail, detail
+        # Both bits AND what they are on: blaming the file instead reads
+        # plausibly and is wrong in the same way the original was.
+        assert "on the directory" in detail, detail
         assert "is not writable by this user" not in detail, detail

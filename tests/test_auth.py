@@ -1,9 +1,13 @@
 """Tests for OAuth token management (auth.py).
 
-Exercises the real refresh_token / _exchange_code logic with the HTTP layer
-mocked and time frozen - the 5-minute expiry buffer and its boundary, the
-refresh-token grant, the lazy load of cached credentials, refresh-token
-preservation, and every error branch. No network, no real OAuth, no secrets.
+Exercises the real auth logic - no network, no real OAuth, no secrets.
+refresh_token runs against a mocked HTTP layer and a frozen clock: the
+5-minute expiry buffer and its boundary, the refresh-token grant, the lazy
+load of cached credentials, refresh-token preservation, and every error
+branch. _exchange_code covers the same transport failures plus the guards
+that keep one from escaping into the callback handler thread. The rest is
+offline: how the token file is written and replaced, and the client-file
+shapes that must reach the setup prompts rather than the browser.
 """
 
 import json
@@ -277,6 +281,51 @@ class TestExchangeCodeGuards:
         assert body is None
         assert error
 
+    def test_a_transport_failure_reports_its_type_not_its_text(self):
+        """This reaches stderr and the local HTML page.
+
+        A TLS failure's own text is a filesystem path; a decode failure's is
+        response bytes.
+        """
+
+        def urlopen(req, timeout=None):
+            raise OSError(2, "No such file", "/home/someone/certs/ca.pem")
+
+        body, error = self._exchange(urlopen)
+        assert body is None
+        assert "/home/someone" not in error
+        # OSError(2, ...) constructs a FileNotFoundError.
+        assert "FileNotFoundError" in error
+
+    def test_a_status_that_is_not_a_code_is_not_quoted_back(self):
+        """Same rule as api.py: the status came from the response body."""
+
+        def urlopen(req, timeout=None):
+            resp = MagicMock()
+            resp.read.return_value = json.dumps(
+                {"status": "SESSION=abcdef; weight=72.5kg"}
+            ).encode()
+            resp.__enter__ = lambda s: s
+            resp.__exit__ = lambda *a: None
+            return resp
+
+        body, error = self._exchange(urlopen)
+        assert body is None
+        assert "SESSION" not in error
+        assert "72.5" not in error
+
+    def test_a_real_status_code_is_still_reported(self):
+        def urlopen(req, timeout=None):
+            resp = MagicMock()
+            resp.read.return_value = json.dumps({"status": 214}).encode()
+            resp.__enter__ = lambda s: s
+            resp.__exit__ = lambda *a: None
+            return resp
+
+        body, error = self._exchange(urlopen)
+        assert body is None
+        assert "214" in error
+
     def test_a_truncated_response_is_returned_not_raised(self):
         import http.client
 
@@ -395,6 +444,10 @@ class TestSetupAuthSurvivesABrokenClientFile:
     One whose values are strings but empty reaches them too and raises
     nothing. Those last two end at the 120-second join, which is what
     surfaces as "timed out or denied".
+
+    The other four shapes in the list below reach the prompts without it: an
+    absent, unparseable or non-object file leaves no credentials to re-use,
+    and an empty object is falsy.
     """
 
     def _run_with_client_file(self, contents, tmp_path, monkeypatch):

@@ -135,7 +135,7 @@ def _exchange_code(code, client_id, client_secret):
         # a stalled connection, a truncated response or an undecodable body all
         # arrive unwrapped and would otherwise escape into the callback handler
         # thread as a traceback.
-        return None, f"Network error: {e}"
+        return None, f"Network error ({type(e).__name__})"
 
     try:
         body = json.loads(raw)
@@ -146,7 +146,12 @@ def _exchange_code(code, client_id, client_secret):
         return None, "Token exchange failed (unexpected response shape)"
 
     if body.get("status") != 0:
-        return None, f"Token exchange failed (status {body.get('status')})"
+        # Same rule as api.py: the status came from the response body, so only
+        # a recognisable code is repeated back.
+        status = body.get("status")
+        if isinstance(status, int) and not isinstance(status, bool):
+            return None, f"Token exchange failed (status {status})"
+        return None, "Token exchange failed (unrecognised status)"
 
     payload = body.get("body")
     if not isinstance(payload, dict):

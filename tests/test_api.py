@@ -522,5 +522,52 @@ class TestTheSyncConnectionIsAlwaysClosed(unittest.TestCase):
         conn.close.assert_called_once()
 
 
+class TestTheStatusIsNotQuotedBackUnlessItIsACode(unittest.TestCase):
+    """The status comes from the response body, and this message is kept.
+
+    run_sync writes it into sync_log and returns it to the model, so a
+    hostile or broken intermediary could put anything there. The Data
+    Safety Rules say status codes and operation names only.
+    """
+
+    @patch("withings_mcp.api.refresh_token", return_value="fake_token")
+    @patch("withings_mcp.api.urllib.request.urlopen")
+    def test_a_real_status_code_is_still_reported(self, mock_urlopen, _refresh):
+        mock_urlopen.return_value = _mock_urlopen({"status": 214})
+        with self.assertRaises(WithingsAPIError) as caught:
+            post("https://example.com", {"action": "getmeas"})
+        self.assertIn("214", str(caught.exception))
+
+    @patch("withings_mcp.api.refresh_token", return_value="fake_token")
+    @patch("withings_mcp.api.urllib.request.urlopen")
+    def test_a_string_status_is_not_quoted_back(self, mock_urlopen, _refresh):
+        secret = "SESSION=abcdef-token-shaped-value; weight=72.5kg"
+        mock_urlopen.return_value = _mock_urlopen({"status": secret})
+        with self.assertRaises(WithingsAPIError) as caught:
+            post("https://example.com", {"action": "getmeas"})
+        self.assertNotIn("SESSION", str(caught.exception))
+        self.assertNotIn("72.5", str(caught.exception))
+
+    @patch("withings_mcp.api.refresh_token", return_value="fake_token")
+    @patch("withings_mcp.api.urllib.request.urlopen")
+    def test_a_structured_status_is_not_quoted_back(self, mock_urlopen, _refresh):
+        mock_urlopen.return_value = _mock_urlopen({"status": {"leak": "user@example.invalid"}})
+        with self.assertRaises(WithingsAPIError) as caught:
+            post("https://example.com", {"action": "getmeas"})
+        self.assertNotIn("example.invalid", str(caught.exception))
+
+    @patch("withings_mcp.api.refresh_token", return_value="fake_token")
+    @patch("withings_mcp.api.urllib.request.urlopen")
+    def test_a_boolean_status_is_not_reported_as_a_code(self, mock_urlopen, _refresh):
+        """bool is a subclass of int, so the carve-out is load-bearing.
+
+        Without it, True renders as "status True", which is not a code.
+        """
+        mock_urlopen.return_value = _mock_urlopen({"status": True})
+        with self.assertRaises(WithingsAPIError) as caught:
+            post("https://example.com", {"action": "getmeas"})
+        self.assertIn("unrecognised", str(caught.exception))
+
+
 if __name__ == "__main__":
     unittest.main()
