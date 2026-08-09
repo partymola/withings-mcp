@@ -569,5 +569,50 @@ class TestTheStatusIsNotQuotedBackUnlessItIsACode(unittest.TestCase):
         self.assertIn("unrecognised", str(caught.exception))
 
 
+class TestEveryApiMessageIsAConstantOrAGuardedCode(unittest.TestCase):
+    """sync_tools writes str(e) into sync_log and returns it to the model.
+
+    That is safe because every message these exceptions carry is a literal -
+    but safe by upstream discipline rather than by construction at the sink,
+    which is the same distinction that let the callback page go unescaped
+    for three rounds. This is the gate: a future f-string anywhere in api.py
+    reopens the class silently otherwise.
+    """
+
+    def test_no_raise_in_the_api_layer_interpolates_freely(self):
+        import ast
+        import inspect
+
+        source = inspect.getsource(api)
+        tree = ast.parse(source)
+        offenders = []
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call)):
+                continue
+            name = ast.unparse(node.exc.func)
+            if not name.startswith("Withings"):
+                continue
+            for arg in node.exc.args:
+                if isinstance(arg, ast.Constant):
+                    continue
+                # One interpolation is permitted: `status`, which the
+                # isinstance guard above its raise has already proved to be a
+                # real int. Any other name, and any expression, is rejected.
+                if isinstance(arg, ast.JoinedStr):
+                    interpolated = {
+                        ast.unparse(part.value)
+                        for part in arg.values
+                        if isinstance(part, ast.FormattedValue)
+                    }
+                    if interpolated <= {"status"}:
+                        continue
+                offenders.append(f"line {node.lineno}: {ast.unparse(arg)}")
+
+        assert offenders == [], (
+            "api.py raise carries something other than a literal - sync_log keeps "
+            f"these and the model reads them: {offenders}"
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
