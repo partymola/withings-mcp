@@ -95,10 +95,10 @@ def post(url: str, params: dict, retries: int = 2) -> dict:
         status = body.get("status")
 
         if status == 0:
-            # The inner value gets the same guard as the envelope: an explicit
-            # null, or anything that is not an object, becomes None here and
-            # fails at the caller's .get - past run_sync's handlers, so no
-            # sync_log row and a clean-looking doctor.
+            # The inner value gets the same guard as the envelope. An absent
+            # or null body stays an empty result, which callers already handle;
+            # anything else that is not an object would fail at the caller's
+            # .get instead, past run_sync's handlers.
             payload = body.get("body")
             if payload is None:
                 return {}

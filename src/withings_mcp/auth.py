@@ -73,16 +73,16 @@ _cached_creds = None
 def _save_json(path, data):
     """Replace the file in one step, and never leave it readable in between.
 
-    A truncate-then-write leaves a window in which a reader gets half a file
-    and cannot tell that from a corrupt one; `os.replace` is atomic within a
-    directory, so a reader sees either the old file or the new one. (That is a
-    property of this filesystem, not of whatever syncs the directory to another
-    host.)
+    `os.replace` is atomic within a directory, so a reader sees either the
+    old file or the new one - a property of the filesystem, not of whatever
+    syncs the directory to another host. mkstemp rather than a named sibling
+    because it creates the file 0600 before anything is written and its name
+    is unique, so concurrent writers cannot interleave through a shared path.
+    A kill between the write and the rename can still leave a temp file, at
+    0600.
 
-    mkstemp rather than a named sibling: it creates the file 0600 before
-    anything is written to it, so the token is never in a world-readable file,
-    and its name is unique, so two processes writing at once cannot interleave
-    through a shared temp path. The temp file is removed if anything fails.
+    The 0600 applies on POSIX; Windows ignores the mode and governs access by
+    inherited ACLs. The atomic replace holds on both.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
@@ -290,6 +290,13 @@ def setup_auth():
             # running. Say the thing that actually helps instead, and fall
             # through to the prompts rather than reading from the empty result.
             print(f"{WITHINGS_CLIENT_PATH} is unreadable; setting up from scratch.")
+
+    def _usable(value):
+        return isinstance(value, str) and value
+
+    if creds and not (_usable(creds.get("client_id")) and _usable(creds.get("client_secret"))):
+        print(f"{WITHINGS_CLIENT_PATH} is incomplete; setting up from scratch.")
+        creds = None
 
     if creds:
         print(f"Existing client_id: {creds['client_id'][:12]}...")

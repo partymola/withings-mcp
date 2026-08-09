@@ -8,6 +8,7 @@ preservation, and every error branch. No network, no real OAuth, no secrets.
 
 import json
 import os
+import sys
 import urllib.error
 from unittest.mock import MagicMock, Mock, call, patch
 from urllib.parse import parse_qs
@@ -296,6 +297,17 @@ class TestExchangeCodeGuards:
         assert body is None
         assert error
 
+    def test_a_null_inner_body_is_returned_not_raised(self):
+        """The envelope parsed and the payload did not - previously unguarded."""
+        body, error = self._exchange(_urlopen_returning_raw(b'{"status": 0, "body": null}'))
+        assert body is None
+        assert error
+
+    def test_an_inner_body_of_the_wrong_shape_is_returned_not_raised(self):
+        body, error = self._exchange(_urlopen_returning_raw(b'{"status": 0, "body": []}'))
+        assert body is None
+        assert error
+
 
 def _urlopen_returning_raw(payload):
     resp = MagicMock()
@@ -309,12 +321,12 @@ def _urlopen_returning_raw(payload):
 class TestTheTokenFileIsNeverExposed:
     """The refresh token must not sit in a readable file, even briefly.
 
-    Writing a temp file at the umask default and chmodding afterwards opened a
-    world-readable window on every refresh, and left the temp behind on
-    failure. Asserted on the mode at the moment of writing, not just the final
-    file, because the final file was 0600 either way.
+    The mode is asserted at the moment of writing, not only on the final
+    file, which is 0600 whether or not there was a readable window. Only the
+    mode-bit test is POSIX-only; the rest hold anywhere.
     """
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits; Windows uses ACLs")
     def test_the_file_is_never_written_at_a_readable_mode(self, tmp_path, monkeypatch):
         seen = []
         real_replace = os.replace
@@ -341,8 +353,12 @@ class TestTheTokenFileIsNeverExposed:
 
         assert list(tmp_path.iterdir()) == []
 
-    def test_a_reader_never_sees_a_partial_file(self, tmp_path):
-        """The point of replacing rather than truncating."""
+    def test_the_last_write_wins_intact(self, tmp_path):
+        """Not an atomicity test: a single-threaded run cannot observe the gap.
+
+        Atomicity here rests on os.replace's semantics, not on this. What it
+        does pin is that replacing does not corrupt or truncate the result.
+        """
         target = tmp_path / "withings_tokens.json"
         auth._save_json(target, {"refresh_token": "first"})
         auth._save_json(target, {"refresh_token": "second", "padding": "x" * 10000})
@@ -365,3 +381,81 @@ class TestTheTokenFileIsNeverExposed:
         auth._save_json(target, {"refresh_token": "b"})
 
         assert len(set(names)) == 2
+
+
+class TestSetupAuthSurvivesABrokenClientFile:
+    """Any client file that is not usable must reach the prompts.
+
+    Three failure shapes, each stopping somewhere different without the
+    guard. Wrong-type values die at the id slice in the re-use branch. A
+    partial file reaches the browser and the callback server and raises
+    inside the handler thread. Values that are strings but empty reach them
+    too, raise nothing, and end at the 120-second join - all three surfacing
+    to the user as "timed out or denied".
+    """
+
+    def _run_with_client_file(self, contents, tmp_path, monkeypatch):
+        client = tmp_path / "withings_client.json"
+        if contents is not None:
+            client.write_text(contents)
+        monkeypatch.setattr(auth, "WITHINGS_CLIENT_PATH", client)
+        monkeypatch.setattr(auth, "WITHINGS_TOKENS_PATH", tmp_path / "withings_tokens.json")
+        monkeypatch.setattr(auth, "CONFIG_DIR", tmp_path)
+
+        # Blocked outright rather than relied on being unreachable: the path
+        # under test is precisely the one that skips the prompts, so a
+        # regression here would otherwise open a browser and hold the socket
+        # for the full two-minute timeout.
+        def no_browser(url):
+            raise AssertionError("setup_auth reached the browser")
+
+        def no_server(*args, **kwargs):
+            raise AssertionError("setup_auth reached the callback socket")
+
+        monkeypatch.setattr(auth.webbrowser, "open", no_browser)
+        monkeypatch.setattr(auth, "HTTPServer", no_server)
+
+        prompts = []
+
+        def fake_input(prompt):
+            prompts.append(prompt)
+            raise KeyboardInterrupt  # Stop before anything else runs.
+
+        monkeypatch.setattr("builtins.input", fake_input)
+        with pytest.raises(KeyboardInterrupt):
+            auth.setup_auth()
+        return prompts
+
+    @pytest.mark.parametrize(
+        "contents",
+        [
+            None,
+            "{not json",
+            '["not", "an", "object"]',
+            "{}",
+            '{"note": "hi"}',
+            '{"client_id": "abc"}',
+            '{"client_id": 12345, "client_secret": "x"}',
+            '{"client_id": "", "client_secret": "x"}',
+        ],
+        ids=[
+            "absent",
+            "unparseable",
+            "wrong-shape",
+            "empty",
+            "no-id",
+            "id-without-secret",
+            "id-not-a-string",
+            "id-empty-string",
+        ],
+    )
+    def test_it_reaches_the_prompts_rather_than_raising(self, contents, tmp_path, monkeypatch):
+        prompts = self._run_with_client_file(contents, tmp_path, monkeypatch)
+        assert prompts, "setup_auth never reached a prompt"
+        assert "Client ID" in prompts[0]
+
+    def test_a_usable_client_file_still_offers_re_use(self, tmp_path, monkeypatch):
+        prompts = self._run_with_client_file(
+            '{"client_id": "abc", "client_secret": "def"}', tmp_path, monkeypatch
+        )
+        assert "Re-use" in prompts[0]

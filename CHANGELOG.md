@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.4.0] - 2026-08-08
+## [0.4.0] - 2026-08-09
 
 ### Added
 
@@ -17,12 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `withings-mcp auth` no longer dies on a hand-edited client file, and no longer hangs on one. A file holding an unrelated key, or a `client_id` that is not a string, raised a `TypeError` or `KeyError` instead of falling through to the setup prompts. A file whose values are present strings but empty got further still - it opened the browser, then sat on the callback for two minutes before reporting "timed out or denied". All three now reach the prompts.
 - An authentication failure during sync is now recorded in `sync_log` with status `auth_error`. Rate-limit and API errors were already logged and this one was not, so it passed through the sync run and left nothing behind: queries carried on serving the cache with no record of why it had stopped growing. The resume cursor is unaffected, since it only advances on a successful sync.
 - Every way of failing to obtain an access token is now classified, and reaches callers as one of two outcomes rather than escaping. Only a refusal is an authentication failure: HTTP 400 or 401, a response-body status naming a credential fault, a response carrying no token, or a credential file that is missing, unreadable or not a JSON object. Everything else is a network error - an unreachable server, a read timeout, a reset connection, a truncated or non-HTTP response, a body that will not decode or is of the wrong shape, a 403, a rate limit, a 5xx, and any other non-zero body status. Previously the commonest way syncing dies - a revoked refresh token - left no `sync_log` row at all, because the failure escaped the sync loop entirely.
 
   The classification is made where the token is obtained, with a catch-all at that boundary, so an unanticipated failure is a network error by construction rather than by listing exception types. The distinction is the point: an authentication failure tells the user to re-authorise, which rewrites a token file other hosts may share, so an unrecognised condition is better under-diagnosed than answered by rotating everyone's token. A bug in the refresh path therefore reports as a network failure - still recorded, still visible, but not acted on destructively. `withings-mcp auth` classifies its own code exchange the same way, instead of letting a failed read escape into the callback handler.
-- A data request that gets an unreadable answer is reported rather than escaping. A proxy or captive portal replying to an API call with HTML, or with JSON of an unexpected shape at either level of the response, raised past the sync loop: no `sync_log` row was written and `doctor` reported a clean log while the cache aged.
-- The token file is replaced in one step rather than truncated and rewritten, so a reader gets either the old file or the new one and never half of either. It is also created at owner-only permissions rather than chmodded after the fact, so the refresh token is never briefly in a world-readable file, and nothing is left behind if the write fails.
+- A data request that gets an unreadable answer is reported rather than escaping. A proxy or captive portal replying to an API call with HTML, or with JSON that is neither absent nor an object at either level of the response, raised past the sync loop: no `sync_log` row was written and `doctor` reported a clean log while the cache aged. An absent inner body is still an empty result, not an error.
+- The token file is replaced in one step rather than truncated and rewritten, so a reader gets either the old file or the new one and never half of either. On POSIX it is also created at owner-only permissions rather than chmodded after the fact, so the refresh token is never briefly in a world-readable file; Windows ignores the mode and governs access by ACLs. Nothing is left behind if the write fails.
 
 ### Packaging
 

@@ -268,49 +268,34 @@ def _check_token_file() -> list[Finding]:
 
 
 def _check_token_file_writability(path: Path) -> list[Finding]:
-    """An unwritable token file cannot store the result of a refresh.
+    """A refresh that cannot be saved loses the token it was given.
 
     A refresh may return a replacement refresh token - auth.py stores whichever
     it gets and falls back to the existing one when the response carries none.
-    Either way the new access token has nowhere to go, so every later call
-    refreshes again, and a replacement that did arrive is lost while the token
-    it replaced may already be spent.
+    If the save fails, the replacement is lost while the token it replaced may
+    already be spent, and every later call refreshes again.
 
-    Two things are required, and write permission alone is not enough: auth.py
-    follows the write with `os.chmod`, which needs ownership. A token file owned
-    by another user but group-writable passes `os.access` and then fails on the
-    chmod, after the write has already happened.
-
-    The directory is deliberately not checked. The rewrite truncates an existing
-    file, which needs no write permission on the directory, so a read-only
-    config directory holding a writable token file works and must not be
-    reported.
+    What the save needs is the DIRECTORY, not the file: auth.py creates a temp
+    file beside the target and renames it over, so it needs write and execute
+    on the containing directory and nothing at all on the file itself. A
+    read-only file in a writable directory saves fine; a writable file in a
+    read-only directory does not. Checking the file - which is what an
+    in-place rewrite would have needed - reported both backwards.
     """
-    writable = os.access(path, os.W_OK)
-    try:
-        owned = path.stat().st_uid == os.geteuid()
-    except OSError:
-        owned = True  # Cannot tell; do not invent a fault.
-
-    if writable and owned:
+    if os.access(path.parent, os.W_OK | os.X_OK):
         return []
 
-    detail = (
-        "withings_tokens.json is not writable by this user"
-        if not writable
-        else "withings_tokens.json is owned by another user, and saving a refreshed "
-        "token also sets its permissions, which requires ownership"
-    )
     return [
         Finding(
             "credentials",
             FAIL,
-            f"{detail}, so a refresh cannot be stored. Every call will refresh again, "
-            "and if the refresh returns a replacement refresh token it is lost while "
-            "the one it replaced may already be spent. Until this process restarts it "
-            "keeps using the token it holds in memory, so the failure may not show "
-            "immediately.",
-            "Fix ownership/permissions before the next sync runs.",
+            f"{path.parent} is not writable by this user, so a refreshed token cannot "
+            "be saved. The save writes a new file in this directory and renames it "
+            "over the old one. Every call will refresh again, and if the refresh "
+            "returns a replacement refresh token it is lost while the one it replaced "
+            "may already be spent. Until this process restarts it keeps using the "
+            "token it holds in memory, so the failure may not show immediately.",
+            "Fix ownership/permissions on the directory before the next sync runs.",
         )
     ]
 

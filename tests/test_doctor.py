@@ -15,12 +15,13 @@ import contextlib
 import json
 import os
 import sqlite3
+import sys
 import time
 from datetime import date, timedelta
 
 import pytest
 
-from withings_mcp import config, db, doctor
+from withings_mcp import auth, config, db, doctor
 
 FAKE_CLIENT_SECRET = "not-a-real-secret-0000"
 FAKE_ACCESS_TOKEN = "fake-access-token-0000"
@@ -29,7 +30,14 @@ FAKE_USER_ID = 12345678
 
 # os.access ignores permission bits under CAP_DAC_OVERRIDE, so every
 # permissions test below is meaningless as root.
-skip_as_root = pytest.mark.skipif(os.geteuid() == 0, reason="root bypasses permission bits")
+# os.geteuid and os.mkfifo are POSIX-only, and the marker below is evaluated at
+# import: on Windows an attribute error here would take the whole module out
+# rather than skipping a test.
+_POSIX = sys.platform != "win32"
+skip_non_posix = pytest.mark.skipif(not _POSIX, reason="POSIX-only file semantics")
+skip_as_root = pytest.mark.skipif(
+    _POSIX and os.geteuid() == 0, reason="root bypasses permission bits"
+)
 
 
 def _write_client(config_dir, client_id="fake-client-id-0000"):
@@ -375,14 +383,31 @@ class TestCredentials:
         assert _severities(doctor.check_credentials(), "access token") == {doctor.WARN}
 
     @skip_as_root
-    def test_unwritable_token_file_fails(self, setup):
-        """A refresh rotates the token remotely; a failed write loses it entirely."""
+    @skip_non_posix
+    def test_a_read_only_config_directory_fails(self, setup):
+        """The save writes a new file in the directory and renames it over."""
+        config_dir, _ = setup
+        _write_client(config_dir)
+        _write_tokens(config_dir)
+        os.chmod(config_dir, 0o500)
+        try:
+            findings = doctor.check_credentials()
+            assert doctor.FAIL in _severities(findings, "credentials")
+            assert "not writable" in " ".join(f.detail for f in _named(findings, "credentials"))
+        finally:
+            os.chmod(config_dir, 0o700)
+
+    @skip_as_root
+    @skip_non_posix
+    def test_a_read_only_token_file_is_not_a_problem(self, setup):
+        """os.replace needs nothing on the file, so this used to fail falsely."""
         config_dir, _ = setup
         _write_client(config_dir)
         path = _write_tokens(config_dir)
         os.chmod(path, 0o400)
         try:
-            assert doctor.FAIL in _severities(doctor.check_credentials(), "credentials")
+            findings = doctor.check_credentials()
+            assert doctor.FAIL not in _severities(findings, "credentials")
         finally:
             os.chmod(path, 0o600)
 
@@ -515,6 +540,7 @@ class TestUnreadableOrLockedDatabase:
         finally:
             os.chmod(db_path.parent, 0o700)
 
+    @skip_non_posix
     def test_a_fifo_does_not_hang_the_run(self, setup):
         """sqlite3.connect on a named pipe blocks forever."""
         _, db_path = setup
@@ -700,3 +726,58 @@ class TestOpenFailureIsNotCalledCorruption:
         assert "not a readable SQLite database" in " ".join(
             f.detail for f in _named(findings, "database")
         )
+
+
+@skip_as_root
+@skip_non_posix
+@pytest.mark.parametrize(
+    "dir_mode,file_mode",
+    [
+        (0o700, 0o600),
+        (0o700, 0o400),
+        (0o700, 0o000),
+        (0o500, 0o600),
+        (0o555, 0o600),
+        (0o600, 0o600),
+    ],
+    ids=[
+        "both-writable",
+        "read-only-file",
+        "unreadable-file",
+        "read-only-dir",
+        "r-x-dir",
+        # Writable but not searchable: the only mode that isolates X_OK, since
+        # 0o500 and 0o555 are the same from the owner's seat.
+        "no-exec-dir",
+    ],
+)
+def test_the_diagnostic_agrees_with_what_saving_actually_does(tmp_path, dir_mode, file_mode):
+    """Run the real save, then ask doctor, and require them to agree.
+
+    A diagnostic written from a reading of the save path drifts the moment
+    the save path changes, and reads as correct throughout. Comparing the two
+    by execution is the only form that cannot.
+    """
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    token_path = config_dir / "withings_tokens.json"
+    token_path.write_text("{}")
+    os.chmod(token_path, file_mode)
+    os.chmod(config_dir, dir_mode)
+
+    try:
+        try:
+            auth._save_json(token_path, {"refresh_token": "fictional"})
+            save_failed = False
+        except OSError:
+            save_failed = True
+
+        reported = bool(doctor._check_token_file_writability(token_path))
+    finally:
+        os.chmod(config_dir, 0o700)
+
+    assert reported == save_failed, (
+        f"dir={oct(dir_mode)} file={oct(file_mode)}: "
+        f"save {'failed' if save_failed else 'succeeded'} but doctor "
+        f"{'reported a problem' if reported else 'reported none'}"
+    )
