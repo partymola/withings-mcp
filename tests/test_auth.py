@@ -386,12 +386,15 @@ class TestTheTokenFileIsNeverExposed:
 class TestSetupAuthSurvivesABrokenClientFile:
     """Any client file that is not usable must reach the prompts.
 
-    Three failure shapes, each stopping somewhere different without the
-    guard. Wrong-type values die at the id slice in the re-use branch. A
-    partial file reaches the browser and the callback server and raises
-    inside the handler thread. Values that are strings but empty reach them
-    too, raise nothing, and end at the 120-second join - all three surfacing
-    to the user as "timed out or denied".
+    Four shapes depend on this guard, each stopping somewhere different
+    without it. A file with no client_id at all dies at the lookup in the
+    re-use branch; one whose client_id is the wrong type dies at the slice on
+    the same line. Both surface as an uncaught traceback. A file with an id
+    but no secret reaches the browser and the callback server, and raises
+    inside the handler thread if the callback carries an authorisation code.
+    One whose values are strings but empty reaches them too and raises
+    nothing. Those last two end at the 120-second join, which is what
+    surfaces as "timed out or denied".
     """
 
     def _run_with_client_file(self, contents, tmp_path, monkeypatch):

@@ -289,13 +289,16 @@ def _check_token_file_writability(path: Path) -> list[Finding]:
         Finding(
             "credentials",
             FAIL,
-            f"{path.parent} is not writable by this user, so a refreshed token cannot "
-            "be saved. The save writes a new file in this directory and renames it "
-            "over the old one. Every call will refresh again, and if the refresh "
-            "returns a replacement refresh token it is lost while the one it replaced "
-            "may already be spent. Until this process restarts it keeps using the "
-            "token it holds in memory, so the failure may not show immediately.",
-            "Fix ownership/permissions on the directory before the next sync runs.",
+            f"{path.parent} does not allow this user to create files in it, so a "
+            "refreshed token cannot be saved. The save writes a new file in this "
+            "directory and renames it over the old one, which needs both write and "
+            "execute (search) permission on the directory - either one missing is "
+            "enough. Every call will refresh again, and if the refresh returns a "
+            "replacement refresh token it is lost while the one it replaced may "
+            "already be spent. Until this process restarts it keeps using the token "
+            "it holds in memory, so the failure may not show immediately.",
+            "Give the directory both write and execute permission for this user "
+            "before the next sync runs.",
         )
     ]
 

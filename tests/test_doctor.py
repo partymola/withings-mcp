@@ -393,7 +393,8 @@ class TestCredentials:
         try:
             findings = doctor.check_credentials()
             assert doctor.FAIL in _severities(findings, "credentials")
-            assert "not writable" in " ".join(f.detail for f in _named(findings, "credentials"))
+            detail = " ".join(f.detail for f in _named(findings, "credentials"))
+            assert "does not allow this user to create files in it" in detail
         finally:
             os.chmod(config_dir, 0o700)
 
@@ -772,7 +773,8 @@ def test_the_diagnostic_agrees_with_what_saving_actually_does(tmp_path, dir_mode
         except OSError:
             save_failed = True
 
-        reported = bool(doctor._check_token_file_writability(token_path))
+        findings = doctor._check_token_file_writability(token_path)
+        reported = bool(findings)
     finally:
         os.chmod(config_dir, 0o700)
 
@@ -781,3 +783,11 @@ def test_the_diagnostic_agrees_with_what_saving_actually_does(tmp_path, dir_mode
         f"save {'failed' if save_failed else 'succeeded'} but doctor "
         f"{'reported a problem' if reported else 'reported none'}"
     )
+
+    # The check fires when either bit is missing, so naming only one sends
+    # the user to fix a permission the directory already has. Asserting on
+    # the boolean alone let that wording stand through the no-exec-dir case.
+    if findings:
+        detail = findings[0].detail
+        assert "write and execute" in detail, detail
+        assert "is not writable by this user" not in detail, detail
