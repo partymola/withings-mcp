@@ -10,6 +10,7 @@ import logging
 import os
 import secrets
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -70,18 +71,28 @@ _cached_creds = None
 
 
 def _save_json(path, data):
-    """Write the file atomically, so no reader ever sees a partial one.
+    """Replace the file in one step, and never leave it readable in between.
 
-    The token file is shared between hosts, so a truncate-then-write leaves a
-    window in which another host reads half a file and cannot tell that from a
-    corrupt one. Writing a sibling temp file and renaming closes the window:
-    os.replace is atomic within a directory.
+    A truncate-then-write leaves a window in which a reader gets half a file
+    and cannot tell that from a corrupt one; `os.replace` is atomic within a
+    directory, so a reader sees either the old file or the new one. (That is a
+    property of this filesystem, not of whatever syncs the directory to another
+    host.)
+
+    mkstemp rather than a named sibling: it creates the file 0600 before
+    anything is written to it, so the token is never in a world-readable file,
+    and its name is unique, so two processes writing at once cannot interleave
+    through a shared temp path. The temp file is removed if anything fails.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.tmp")
-    tmp.write_text(json.dumps(data, indent=2))
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(json.dumps(data, indent=2))
+        os.replace(tmp, path)
+    except BaseException:
+        os.unlink(tmp)
+        raise
 
 
 def _load_json(path):
@@ -137,7 +148,11 @@ def _exchange_code(code, client_id, client_secret):
     if body.get("status") != 0:
         return None, f"Token exchange failed (status {body.get('status')})"
 
-    return body.get("body"), None
+    payload = body.get("body")
+    if not isinstance(payload, dict):
+        return None, "Token exchange failed (unexpected response shape)"
+
+    return payload, None
 
 
 def _refresh_token() -> str:
@@ -272,9 +287,11 @@ def setup_auth():
             creds = _load_json(WITHINGS_CLIENT_PATH)
         except TokenRefused:
             # _load_json's advice is "run withings-mcp auth", which is what is
-            # running. Say the thing that actually helps instead.
+            # running. Say the thing that actually helps instead, and fall
+            # through to the prompts rather than reading from the empty result.
             print(f"{WITHINGS_CLIENT_PATH} is unreadable; setting up from scratch.")
-            creds = None
+
+    if creds:
         print(f"Existing client_id: {creds['client_id'][:12]}...")
         resp = input("Re-use existing credentials? [Y/n] ").strip().lower()
         if resp in ("n", "no"):

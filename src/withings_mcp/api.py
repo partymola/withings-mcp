@@ -95,7 +95,16 @@ def post(url: str, params: dict, retries: int = 2) -> dict:
         status = body.get("status")
 
         if status == 0:
-            return body.get("body", {})
+            # The inner value gets the same guard as the envelope: an explicit
+            # null, or anything that is not an object, becomes None here and
+            # fails at the caller's .get - past run_sync's handlers, so no
+            # sync_log row and a clean-looking doctor.
+            payload = body.get("body")
+            if payload is None:
+                return {}
+            if not isinstance(payload, dict):
+                raise WithingsAPIError("Withings returned an unexpected response shape.")
+            return payload
 
         if status == 401:
             # Token expired - force refresh and retry

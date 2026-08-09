@@ -7,6 +7,7 @@ preservation, and every error branch. No network, no real OAuth, no secrets.
 """
 
 import json
+import os
 import urllib.error
 from unittest.mock import MagicMock, Mock, call, patch
 from urllib.parse import parse_qs
@@ -303,3 +304,64 @@ def _urlopen_returning_raw(payload):
     cm.__enter__.return_value = resp
     cm.__exit__.return_value = False
     return Mock(return_value=cm)
+
+
+class TestTheTokenFileIsNeverExposed:
+    """The refresh token must not sit in a readable file, even briefly.
+
+    Writing a temp file at the umask default and chmodding afterwards opened a
+    world-readable window on every refresh, and left the temp behind on
+    failure. Asserted on the mode at the moment of writing, not just the final
+    file, because the final file was 0600 either way.
+    """
+
+    def test_the_file_is_never_written_at_a_readable_mode(self, tmp_path, monkeypatch):
+        seen = []
+        real_replace = os.replace
+
+        def spy(src, dst):
+            seen.append(oct(os.stat(src).st_mode & 0o777))
+            return real_replace(src, dst)
+
+        monkeypatch.setattr(auth.os, "replace", spy)
+        target = tmp_path / "withings_tokens.json"
+        auth._save_json(target, {"refresh_token": "fictional"})
+
+        assert seen == ["0o600"]
+        assert oct(target.stat().st_mode & 0o777) == "0o600"
+
+    def test_nothing_is_left_behind_when_the_write_fails(self, tmp_path, monkeypatch):
+        def boom(src, dst):
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(auth.os, "replace", boom)
+        target = tmp_path / "withings_tokens.json"
+        with pytest.raises(OSError):
+            auth._save_json(target, {"refresh_token": "fictional"})
+
+        assert list(tmp_path.iterdir()) == []
+
+    def test_a_reader_never_sees_a_partial_file(self, tmp_path):
+        """The point of replacing rather than truncating."""
+        target = tmp_path / "withings_tokens.json"
+        auth._save_json(target, {"refresh_token": "first"})
+        auth._save_json(target, {"refresh_token": "second", "padding": "x" * 10000})
+
+        assert json.loads(target.read_text())["refresh_token"] == "second"
+
+    def test_concurrent_writers_do_not_share_a_temp_path(self, tmp_path, monkeypatch):
+        """A fixed temp name lets one writer publish another's half-written file."""
+        names = []
+        real_mkstemp = auth.tempfile.mkstemp
+
+        def spy(**kwargs):
+            fd, name = real_mkstemp(**kwargs)
+            names.append(name)
+            return fd, name
+
+        monkeypatch.setattr(auth.tempfile, "mkstemp", spy)
+        target = tmp_path / "withings_tokens.json"
+        auth._save_json(target, {"refresh_token": "a"})
+        auth._save_json(target, {"refresh_token": "b"})
+
+        assert len(set(names)) == 2

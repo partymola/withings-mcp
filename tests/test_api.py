@@ -497,6 +497,14 @@ class TestTheDataRequestParses(unittest.TestCase):
                     self._post_returning(payload)
                 self.assertNotIsInstance(caught.exception, api.WithingsAuthError)
 
+    def test_a_null_inner_body_is_not_returned_as_none(self):
+        """An explicit null used to fail at the caller's .get, past run_sync."""
+        self.assertEqual(self._post_returning(b'{"status": 0, "body": null}'), {})
+
+    def test_an_inner_body_of_the_wrong_shape_is_reported(self):
+        with self.assertRaises(api.WithingsAPIError):
+            self._post_returning(b'{"status": 0, "body": ["not", "an", "object"]}')
+
 
 class TestTheSyncConnectionIsAlwaysClosed(unittest.TestCase):
     """An exception nobody classified must not leak the connection."""

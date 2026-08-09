@@ -35,21 +35,30 @@ def _guard_index(tree):
     return None
 
 
-@pytest.mark.parametrize("path", TEST_FILES, ids=lambda p: p.name)
-def test_nothing_is_defined_after_the_main_guard(path):
-    tree = ast.parse(path.read_text())
+def _hidden_names(source):
+    """Every definition unreachable to a direct `python -m tests.<module>` run.
+
+    Shared with the tests below rather than duplicated, so a test cannot pass
+    against a copy of this logic while the real check is empty.
+    """
+    tree = ast.parse(source)
     index = _guard_index(tree)
     if index is None:
-        return  # No guard, nothing to hide behind.
+        return []  # No guard, nothing to hide behind.
 
     # Walk rather than scan the top level: a class nested inside a `try` or an
     # `if` after the guard is just as unreachable.
-    hidden = [
+    return [
         node.name
         for parent in tree.body[index + 1 :]
         for node in ast.walk(parent)
         if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
     ]
+
+
+@pytest.mark.parametrize("path", TEST_FILES, ids=lambda p: p.name)
+def test_nothing_is_defined_after_the_main_guard(path):
+    hidden = _hidden_names(path.read_text())
     assert not hidden, (
         f"{path.name} defines {hidden} after `if __name__ == '__main__'`, "
         "so a direct unittest run silently skips them"
@@ -109,19 +118,6 @@ class TestEarly(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 """
-
-
-def _hidden_names(source):
-    tree = ast.parse(source)
-    index = _guard_index(tree)
-    if index is None:
-        return []
-    return [
-        node.name
-        for parent in tree.body[index + 1 :]
-        for node in ast.walk(parent)
-        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
-    ]
 
 
 def test_it_finds_a_class_after_the_guard():
