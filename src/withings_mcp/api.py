@@ -71,7 +71,7 @@ def post(url: str, params: dict, retries: int = 2) -> dict:
 
         try:
             with urllib.request.urlopen(req, timeout=15) as resp:
-                body = json.loads(resp.read().decode())
+                raw = resp.read().decode()
         except (OSError, http.client.HTTPException, UnicodeDecodeError) as e:
             # Wider than URLError: a read timeout or reset arrives bare, a
             # truncated response raises from http.client (not an OSError at
@@ -79,6 +79,18 @@ def post(url: str, params: dict, retries: int = 2) -> dict:
             # escaping here would leave run_sync with no log row and an
             # unclosed connection.
             raise WithingsAPIError("Network error. Check your connection.") from e
+
+        # Parsing is its own failure cause, not a transport one: an intermediary
+        # answering 200 with HTML raises ValueError here, and JSON of the wrong
+        # shape fails at the .get below. Neither is caught above, so both used
+        # to escape run_sync - no log row, and doctor reporting a clean log.
+        try:
+            body = json.loads(raw)
+        except ValueError as e:
+            raise WithingsAPIError("Withings returned an unreadable response.") from e
+
+        if not isinstance(body, dict):
+            raise WithingsAPIError("Withings returned an unexpected response shape.")
 
         status = body.get("status")
 

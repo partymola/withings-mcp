@@ -70,18 +70,27 @@ _cached_creds = None
 
 
 def _save_json(path, data):
+    """Write the file atomically, so no reader ever sees a partial one.
+
+    The token file is shared between hosts, so a truncate-then-write leaves a
+    window in which another host reads half a file and cannot tell that from a
+    corrupt one. Writing a sibling temp file and renaming closes the window:
+    os.replace is atomic within a directory.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2))
-    os.chmod(path, 0o600)
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(json.dumps(data, indent=2))
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
 
 
 def _load_json(path):
     """Read a credential file as a dict, or say why the credentials are unusable.
 
     Classified here rather than left to the caller: a file that is absent,
-    unreadable or not a JSON object means there are no usable credentials,
-    which is a refusal - unlike a transport failure it will not clear on its
-    own, and the user does have to re-authorise.
+    unreadable or not a JSON object means there are no usable credentials, and
+    re-authorising is the remedy. _save_json writes atomically, so a reader
+    cannot see a half-written file and mistake it for a malformed one.
     """
     try:
         data = json.loads(path.read_text())
@@ -200,8 +209,10 @@ def _refresh_token() -> str:
         raise RefreshNetworkError("Withings returned an unreadable response.") from e
 
     if not isinstance(body, dict):
+        # An intermediary that replaced the body says nothing about the
+        # credentials, whether what it substituted parses as JSON or not.
         logger.error("Token refresh returned an unexpected response shape")
-        raise TokenRefused("Token refresh failed. Run: withings-mcp auth")
+        raise RefreshNetworkError("Withings returned an unexpected response shape.")
 
     # Withings answers over HTTP 200 with the real outcome in the body, so this
     # is the live path and the HTTP codes above are the rare one.
@@ -257,7 +268,13 @@ def setup_auth():
 
     creds = None
     if WITHINGS_CLIENT_PATH.exists():
-        creds = _load_json(WITHINGS_CLIENT_PATH)
+        try:
+            creds = _load_json(WITHINGS_CLIENT_PATH)
+        except TokenRefused:
+            # _load_json's advice is "run withings-mcp auth", which is what is
+            # running. Say the thing that actually helps instead.
+            print(f"{WITHINGS_CLIENT_PATH} is unreadable; setting up from scratch.")
+            creds = None
         print(f"Existing client_id: {creds['client_id'][:12]}...")
         resp = input("Re-use existing credentials? [Y/n] ").strip().lower()
         if resp in ("n", "no"):

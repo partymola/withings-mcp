@@ -273,6 +273,13 @@ class TestAgainstTheRealRefresh(unittest.TestCase):
     def _http_error(self, code):
         return urllib.error.HTTPError("https://example.invalid", code, "boom", {}, io.BytesIO(b""))
 
+    def test_a_bad_request_from_the_server_is_an_auth_failure(self):
+        """400 is RFC 6749's invalid_grant, the standard refusal."""
+        tokens = '{"access_token": "a", "refresh_token": "r", "expires_at": 0}'
+        with patch.object(auth.urllib.request, "urlopen", side_effect=self._http_error(400)):
+            with self.assertRaises(api.WithingsAuthError):
+                self._post_with_token_file(tokens)
+
     def test_a_refusal_from_the_server_is_an_auth_failure(self):
         """The headline case: a revoked refresh token, answered with 4xx."""
         tokens = '{"access_token": "a", "refresh_token": "r", "expires_at": 0}'
@@ -303,12 +310,17 @@ class TestAgainstTheRealRefresh(unittest.TestCase):
                 self._post_with_token_file(tokens)
         self.assertNotIsInstance(caught.exception, api.WithingsAuthError)
 
-    def test_a_response_of_the_wrong_shape_is_reported_not_raised(self):
-        """A JSON array used to fail later at an attribute access."""
+    def test_a_response_of_the_wrong_shape_is_not_a_refusal(self):
+        """An intermediary that replaced the body says nothing about the token.
+
+        Whether what it substituted happens to parse as JSON is not a fact
+        about the credentials, so this and the non-JSON case must agree.
+        """
         tokens = '{"access_token": "a", "refresh_token": "r", "expires_at": 0}'
         with self._urlopen_returning(b'["not", "an", "object"]'):
-            with self.assertRaises(api.WithingsAuthError):
+            with self.assertRaises(api.WithingsAPIError) as caught:
                 self._post_with_token_file(tokens)
+        self.assertNotIsInstance(caught.exception, api.WithingsAuthError)
 
     def test_a_response_missing_its_body_is_reported_not_raised(self):
         """Without the guard a KeyError reaches the same exception type.
@@ -444,6 +456,62 @@ class TestTheDataRequestTransport(unittest.TestCase):
     def test_a_reset_connection_is_reported_not_escaped(self):
         with self.assertRaises(api.WithingsAPIError):
             self._post_with_a_working_token(ConnectionResetError("reset"))
+
+
+class TestTheDataRequestParses(unittest.TestCase):
+    """The data request has its own read and parse, with its own failures.
+
+    Every earlier round enumerated exception types arriving at the refresh
+    boundary, so this site - which reads and parses separately - was never in
+    scope, and a captive portal answering 200 with HTML escaped run_sync
+    entirely: no sync_log row, and doctor reporting a clean log.
+    """
+
+    def _post_returning(self, payload):
+        response = MagicMock()
+        response.read.return_value = payload
+        response.__enter__ = lambda s: s
+        response.__exit__ = lambda *a: None
+        with (
+            patch.object(api, "refresh_token", return_value="token"),
+            patch.object(api.urllib.request, "urlopen", return_value=response),
+        ):
+            return api.post("https://example.invalid/measure", {})
+
+    def test_a_body_that_is_not_json_is_reported(self):
+        with self.assertRaises(api.WithingsAPIError):
+            self._post_returning(b"<html>captive portal</html>")
+
+    def test_a_body_of_the_wrong_shape_is_reported(self):
+        with self.assertRaises(api.WithingsAPIError):
+            self._post_returning(b'["not", "an", "object"]')
+
+    def test_an_undecodable_body_is_reported(self):
+        with self.assertRaises(api.WithingsAPIError):
+            self._post_returning(b"\xff\xfe not utf-8")
+
+    def test_neither_is_reported_as_an_auth_failure(self):
+        for payload in (b"<html>x</html>", b'["a"]', b"\xff\xfe"):
+            with self.subTest(payload=payload[:8]):
+                with self.assertRaises(api.WithingsAPIError) as caught:
+                    self._post_returning(payload)
+                self.assertNotIsInstance(caught.exception, api.WithingsAuthError)
+
+
+class TestTheSyncConnectionIsAlwaysClosed(unittest.TestCase):
+    """An exception nobody classified must not leak the connection."""
+
+    def test_the_connection_closes_when_a_sync_raises(self):
+        from withings_mcp.tools import sync_tools
+
+        conn = MagicMock()
+        with (
+            patch.object(sync_tools.db, "get_db", return_value=conn),
+            patch.object(sync_tools, "_run_sync", side_effect=RuntimeError("unclassified")),
+        ):
+            with self.assertRaises(RuntimeError):
+                sync_tools.run_sync(["body"])
+        conn.close.assert_called_once()
 
 
 if __name__ == "__main__":

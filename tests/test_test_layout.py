@@ -54,3 +54,87 @@ def test_nothing_is_defined_after_the_main_guard(path):
         f"{path.name} defines {hidden} after `if __name__ == '__main__'`, "
         "so a direct unittest run silently skips them"
     )
+
+
+# The detector needs its own tests: a guard that silently stops detecting is
+# the same failure it was written to catch, one level up.
+_AFTER_THE_GUARD = """
+import unittest
+
+
+class TestEarly(unittest.TestCase):
+    pass
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+class TestLate(unittest.TestCase):
+    pass
+"""
+
+_NESTED_AFTER_THE_GUARD = """
+import unittest
+
+if __name__ == "__main__":
+    unittest.main()
+
+try:
+    class TestNested(unittest.TestCase):
+        pass
+except Exception:
+    pass
+"""
+
+_REVERSED_GUARD = """
+import unittest
+
+if "__main__" == __name__:
+    unittest.main()
+
+
+class TestLate(unittest.TestCase):
+    pass
+"""
+
+_CLEAN = """
+import unittest
+
+
+class TestEarly(unittest.TestCase):
+    pass
+
+
+if __name__ == "__main__":
+    unittest.main()
+"""
+
+
+def _hidden_names(source):
+    tree = ast.parse(source)
+    index = _guard_index(tree)
+    if index is None:
+        return []
+    return [
+        node.name
+        for parent in tree.body[index + 1 :]
+        for node in ast.walk(parent)
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+
+
+def test_it_finds_a_class_after_the_guard():
+    assert _hidden_names(_AFTER_THE_GUARD) == ["TestLate"]
+
+
+def test_it_finds_a_class_nested_after_the_guard():
+    assert _hidden_names(_NESTED_AFTER_THE_GUARD) == ["TestNested"]
+
+
+def test_it_finds_the_guard_with_reversed_operands():
+    assert _hidden_names(_REVERSED_GUARD) == ["TestLate"]
+
+
+def test_it_passes_a_correctly_ordered_module():
+    assert _hidden_names(_CLEAN) == []
