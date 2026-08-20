@@ -476,7 +476,7 @@ class TestSetupAuthSurvivesABrokenClientFile:
         monkeypatch.setattr(auth.webbrowser, "open", no_browser)
         # The name setup_auth actually constructs. Patching HTTPServer instead
         # blocks nothing, and the guard reads as working - which is why
-        # test_setup_auth_binds_through_the_guarded_server pins the name too.
+        # test_no_bare_httpserver_is_constructed_anywhere pins the name too.
         monkeypatch.setattr(auth, "_CallbackServer", no_server)
 
         prompts = []
@@ -651,6 +651,30 @@ class TestTheCallbackPortIsNotShared:
             and node.func.id == "HTTPServer"
         ]
         assert not bare, bare
+
+    def test_a_busy_port_is_reported_before_the_browser_opens(self, monkeypatch, capsys):
+        """A port that is already held is a failure this flow could not have
+        before, so it has to end in advice rather than a traceback - and end
+        there before an authorisation page is opened onto a redirect with
+        nowhere to land."""
+        opened = []
+        # _isolate_auth already points the client path at a temp file that does
+        # not exist, so the flow goes to the prompts rather than the re-use path.
+        monkeypatch.setattr(auth.webbrowser, "open", lambda url: opened.append(url))
+        monkeypatch.setattr("builtins.input", lambda prompt: "supplied")
+        monkeypatch.setattr(auth, "_save_json", lambda path, data: None)
+
+        def refuse_to_bind(*args, **kwargs):
+            raise OSError(98, "Address already in use")
+
+        monkeypatch.setattr(auth, "_CallbackServer", refuse_to_bind)
+
+        with pytest.raises(SystemExit) as exit_info:
+            auth.setup_auth()
+
+        assert exit_info.value.code == 1
+        assert opened == [], opened
+        assert str(auth.WITHINGS_CALLBACK_PORT) in capsys.readouterr().err
 
 
 class TestTheCallbackPageEscapesWhatItShows:
