@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import secrets
+import socket
 import sys
 import tempfile
 import threading
@@ -46,6 +47,28 @@ _REFUSAL_CODES = frozenset({400, 401})
 # only under-advises. api.post takes the same view of an unknown status for a
 # data request, defaulting it to WithingsAPIError.
 _REFUSAL_STATUSES = frozenset({342, 401})
+
+
+class _CallbackServer(HTTPServer):
+    """Refuse to share the port the authorisation code arrives on.
+
+    Deliberate, and not what `HTTPServer` does by default: it asks for address
+    reuse, which on Windows is what lets another process bind over this
+    listener and take the code. Not asking is the fix; the exclusive-use
+    option is asked for as well. Why each half is there, and what it costs, is
+    in AGENTS.md. Pinned by TestTheCallbackPortIsNotShared, which drives this
+    method's Windows branch on a POSIX runner.
+    """
+
+    allow_reuse_address = sys.platform != "win32"
+    # SO_REUSEPORT is the POSIX-side version of the same hazard; nothing sets
+    # this, and nothing should.
+    allow_reuse_port = False
+
+    def server_bind(self):
+        if sys.platform == "win32":
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
 
 
 class TokenRefused(RuntimeError):
@@ -388,11 +411,25 @@ def setup_auth():
         )
     )
 
+    # Bind before opening the browser: the listener no longer asks to share the
+    # port, so a busy one is now a real failure, and sending the user to an
+    # authorisation page whose redirect has nowhere to land wastes the attempt.
+    try:
+        server = _CallbackServer(("localhost", WITHINGS_CALLBACK_PORT), CallbackHandler)
+    except OSError:
+        print(
+            f"Port {WITHINGS_CALLBACK_PORT} is in use, so the callback cannot be received. "
+            "It must match the callback URL registered with Withings and so cannot be "
+            "changed. On Windows a socket from a recent `withings-mcp auth` may still be "
+            "closing; retry once it has.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     print("\nOpening browser for Withings auth...")
     print(f"If it doesn't open, visit:\n{auth_url}\n")
     webbrowser.open(auth_url)
 
-    server = HTTPServer(("localhost", WITHINGS_CALLBACK_PORT), CallbackHandler)
     # Use a thread with timeout so we don't hang forever
     thread = threading.Thread(target=server.handle_request, daemon=True)
     thread.start()
