@@ -51,11 +51,10 @@ SQLite at `withings.db` (gitignored). Tables:
 - Cache-first with a `live=True` flag for fresh API queries; `withings_get_heart` and `withings_get_devices` are always live; `withings_get_sleep(detail=True)` is live (minute-by-minute phases, capped at 7 days)
 - Date parameters accept ISO dates, month strings, and relative days (e.g. "30d")
 - All logging to stderr (stdout reserved for JSON-RPC); error messages carry status codes only, never health values
+- **Every datetime conversion names a zone.** The Withings API speaks epoch seconds and this server stores ISO dates, so a naive `fromtimestamp` or `combine` silently reads the machine's zone and moves a date by a day. `doctor.py:_timestamp_or_none` is the single exception, deliberately, because it prints a token expiry for whoever is reading the terminal. A source-reading test in `tests/test_query_tools.py` requires the zone everywhere else and exempts that one by function name, so moving it fails the test rather than widening the exemption. The test exists because the behavioural guard - running the suite under a forced western zone - needs `time.tzset`, which Windows does not have
 
 ## Running tests
 
-```bash
-.venv/bin/python -m pytest tests/ -v
-```
+See [CONTRIBUTING.md](CONTRIBUTING.md#run-the-test-suite), which carries the command and the per-platform interpreter paths. Keep it the only copy.
 
 All tests use in-memory SQLite and fictional data from `tests/fixtures.py`.

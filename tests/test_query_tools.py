@@ -135,56 +135,105 @@ def cache(tmp_path):
         yield seed
 
 
-def _tool_source_calls(attr):
-    """Every `<x>.<attr>(...)` call under src/withings_mcp/tools/, with its site."""
-    root = Path(__file__).resolve().parents[1] / "src" / "withings_mcp" / "tools"
+_SRC = Path(__file__).resolve().parents[1] / "src" / "withings_mcp"
+
+# The one conversion that is naive on purpose: doctor prints a token expiry for
+# whoever is reading the terminal, so their own zone is the useful one. Named by
+# the function holding it rather than by file, so moving or renaming it fails
+# here instead of quietly widening the exemption to the rest of doctor.py.
+_NAIVE_BY_DESIGN = ("doctor.py", "_timestamp_or_none")
+
+
+def _calls(attr):
+    """Every `<x>.<attr>(...)` in the package, as (site, enclosing def, node)."""
     found = []
-    for path in sorted(root.glob("*.py")):
-        for node in ast.walk(ast.parse(path.read_text())):
+    for path in sorted(_SRC.rglob("*.py")):
+        tree = ast.parse(path.read_text())
+        # Walk is outermost-first, so a nested def overwrites its parent and the
+        # innermost enclosing name is the one that survives.
+        enclosing = {}
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for child in ast.walk(node):
+                    enclosing[id(child)] = node.name
+        for node in ast.walk(tree):
             if (
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Attribute)
                 and node.func.attr == attr
             ):
-                found.append((f"{path.name}:{node.lineno}", node))
+                site = f"{path.name}:{node.lineno}"
+                found.append((site, (path.name, enclosing.get(id(node))), node))
     return found
 
 
+def _names_a_zone(node, keyword):
+    """True when a real zone is passed, by keyword or position.
+
+    An explicit `None` is rejected rather than counted: it is what the argument
+    already defaults to, so accepting it would let the check pass over a
+    conversion that still reads the machine's zone.
+    """
+    for kw in node.keywords:
+        if kw.arg == keyword:
+            return not (isinstance(kw.value, ast.Constant) and kw.value.value is None)
+    position = {"tz": 1, "tzinfo": 2}[keyword]
+    if len(node.args) > position:
+        arg = node.args[position]
+        return not (isinstance(arg, ast.Constant) and arg.value is None)
+    return False
+
+
 class TestEveryConversionPinsTheZone:
-    """What the fixture above guarantees, read off the source instead.
+    """The half of the fixture's guarantee that no assertion can see without tzset.
 
     Forcing a western zone turns a dropped `tz=timezone.utc` into a failed
-    assertion, but only where `time.tzset` exists. This holds identically on
-    every platform, and it covers the encode direction, which on a runner
-    without tzset no assertion in this module can see.
+    assertion, but only where `time.tzset` exists. Reading the source holds
+    identically on every platform, and it covers the encode direction, which on
+    a runner without tzset nothing in this module can see at all.
 
-    Scoped to `tools/` on purpose: doctor.py decodes a token expiry for a
-    person reading a terminal, deliberately in that person's local time.
+    Scoped to the whole package with one named exemption rather than to
+    `tools/`: a directory boundary would have let a conversion helper added to
+    `helpers.py` - the module every tool imports - pass without naming a zone.
     """
 
     def test_every_fromtimestamp_names_a_zone(self):
-        calls = _tool_source_calls("fromtimestamp")
+        calls = _calls("fromtimestamp")
         assert calls, "no fromtimestamp found - has the decode moved?"
+        assert [c for c in calls if c[1] == _NAIVE_BY_DESIGN], (
+            f"{_NAIVE_BY_DESIGN} no longer holds a naive decode - move the exemption or drop it"
+        )
         naive = [
             site
-            for site, node in calls
-            if not any(kw.arg == "tz" for kw in node.keywords) and len(node.args) < 2
+            for site, where, node in calls
+            if where != _NAIVE_BY_DESIGN and not _names_a_zone(node, "tz")
         ]
         assert not naive, f"decodes in local time: {naive}"
 
     def test_every_combine_names_a_zone(self):
-        calls = _tool_source_calls("combine")
+        calls = _calls("combine")
         assert calls, "no datetime.combine found - has the encode moved?"
-        naive = [
-            site
-            for site, node in calls
-            if not any(kw.arg == "tzinfo" for kw in node.keywords) and len(node.args) < 3
-        ]
+        naive = [site for site, _where, node in calls if not _names_a_zone(node, "tzinfo")]
         assert not naive, f"encodes from local time: {naive}"
 
-    def test_the_naive_utc_helper_is_not_used(self):
-        """It returns a naive datetime, so it passes the check above by name."""
-        assert not _tool_source_calls("utcfromtimestamp")
+    def test_the_naive_conversion_helpers_are_not_used(self):
+        """Both sidestep the checks above by name while returning local time."""
+        assert not _calls("utcfromtimestamp")
+        assert not _calls("mktime")
+
+    def test_no_epoch_is_taken_from_a_naive_parse(self):
+        """`strptime` and `fromisoformat` yield naive datetimes unless the text
+        carries an offset, so `.timestamp()` on one reads the machine's zone.
+        It is the natural way to write date-to-epoch, and the checks above see
+        straight past it."""
+        offenders = [
+            site
+            for site, _where, node in _calls("timestamp")
+            if isinstance(node.func.value, ast.Call)
+            and isinstance(node.func.value.func, ast.Attribute)
+            and node.func.value.func.attr in {"strptime", "fromisoformat"}
+        ]
+        assert not offenders, f"encodes from a naive parse: {offenders}"
 
 
 # --- withings_get_body ---
