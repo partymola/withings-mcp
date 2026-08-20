@@ -583,10 +583,11 @@ def check_auth_prerequisites() -> list[Finding]:
     findings = []
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         # Here SO_REUSEADDR only means "ignore a TIME_WAIT socket left by the
-        # last auth run". Windows reads it as permission to bind over a live
-        # listener, so with it set the check could never fire there. Without it
-        # a recently closed auth run reads as busy for a few minutes, which on
-        # a WARN is the better half of the trade.
+        # last auth run". Windows reads it as permission to bind over a listener
+        # that asked for reuse itself, and the callback server does, so with it
+        # set the check could never fire against the one holder that matters.
+        # There, without it, a recently closed auth run reads as busy for a few
+        # minutes - on a WARN, the better half of the trade.
         if sys.platform != "win32":
             probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
