@@ -575,7 +575,12 @@ def check_auth_prerequisites() -> list[Finding]:
     """Things that break `withings-mcp auth` itself, checked before it is needed."""
     findings = []
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # Here SO_REUSEADDR only means "ignore a TIME_WAIT socket left by the
+        # last auth run". Windows reads it as permission to bind over a live
+        # listener, so the probe would succeed against a port genuinely in use
+        # and the check could never fire.
+        if sys.platform != "win32":
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             probe.bind(("localhost", config.WITHINGS_CALLBACK_PORT))
         except OSError:
