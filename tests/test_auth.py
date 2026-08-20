@@ -156,7 +156,10 @@ class TestRefreshToken:
         assert written["access_token"] == "tok-new"
         assert written["refresh_token"] == "ref-new"
         assert written["expires_at"] == _NOW + 10800
-        assert mode == 0o600  # owner-only, no group/other access
+        # Only the mode assertion is POSIX-only; the write above holds anywhere,
+        # so guarding it here rather than skipping the whole test.
+        if sys.platform != "win32":
+            assert mode == 0o600  # owner-only, no group/other access
 
     def test_refresh_preserves_old_refresh_token_when_omitted(self):
         # A refresh response without a new refresh_token keeps the old one.

@@ -33,6 +33,9 @@ FAKE_USER_ID = 12345678
 # os.geteuid and os.mkfifo are POSIX-only, and the marker below is evaluated at
 # import: on Windows an attribute error here would take the whole module out
 # rather than skipping a test.
+# Windows has no mode bits and os.access there does not consult ACLs, so the
+# permission findings cannot fire at all - those tests assert a semantics that
+# platform does not have, and skip rather than being made to pass.
 _POSIX = sys.platform != "win32"
 skip_non_posix = pytest.mark.skipif(not _POSIX, reason="POSIX-only file semantics")
 skip_as_root = pytest.mark.skipif(
@@ -244,7 +247,16 @@ class TestNoCheckCanEndTheRun:
 class TestAwkwardPaths:
     """Invariant 6 - the read-only URI must survive characters with URI meaning."""
 
-    @pytest.mark.parametrize("name", ["with#hash.db", "with?query.db", "plain.db"])
+    # `?` is not a legal character in a Windows filename, so the case cannot be
+    # built there. `#` is legal on both, and it is the one the escaping is for.
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "with#hash.db",
+            pytest.param("with?query.db", marks=skip_non_posix),
+            "plain.db",
+        ],
+    )
     def test_existing_db_is_read_without_being_touched(self, tmp_path, monkeypatch, name):
         """An unescaped `#` truncates the URI and reopens the file writable.
 
@@ -514,6 +526,7 @@ class TestUnreadableOrLockedDatabase:
     """
 
     @skip_as_root
+    @skip_non_posix
     def test_unreadable_database_is_not_called_corrupt(self, setup):
         _, db_path = setup
         db.get_db(db_path).close()
@@ -529,6 +542,7 @@ class TestUnreadableOrLockedDatabase:
             os.chmod(db_path, 0o600)
 
     @skip_as_root
+    @skip_non_posix
     def test_read_only_directory_is_reported_as_unwritable(self, setup):
         """SQLite writes a journal beside the database, so the directory counts."""
         _, db_path = setup

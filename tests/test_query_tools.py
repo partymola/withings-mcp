@@ -75,6 +75,14 @@ def _no_autosync():
         yield
 
 
+# Windows has no time.tzset and does not re-read TZ after start, so the zone
+# cannot be forced there and the module runs under the runner's own.
+_TZ_CAN_BE_FORCED = hasattr(time, "tzset")
+needs_forced_tz = pytest.mark.skipif(
+    not _TZ_CAN_BE_FORCED, reason="tz guard needs time.tzset, absent on Windows"
+)
+
+
 @pytest.fixture(autouse=True)
 def _force_non_utc_tz():
     """Run every test under a non-UTC zone.
@@ -83,8 +91,17 @@ def _force_non_utc_tz():
     are UTC, so a dropped tz=timezone.utc is invisible there; forcing a western
     zone makes every date/epoch assertion in this module a real tz regression
     guard (a naive decode of a UTC-midnight timestamp rolls back to the prior
-    day). POSIX-only (time.tzset), which matches the ubuntu CI.
+    day).
+
+    Where the zone cannot be forced the module still runs, but under UTC - the
+    assertions hold and simply stop being tz-sensitive. A test that exists only
+    to exercise the shift carries `needs_forced_tz` so it skips rather than
+    passing vacuously.
     """
+    if not _TZ_CAN_BE_FORCED:
+        yield
+        return
+
     prev = os.environ.get("TZ")
     os.environ["TZ"] = "America/New_York"
     time.tzset()
@@ -211,6 +228,7 @@ class TestGetBody:
         assert out["count"] == 1  # the row is still returned, just stripped to date
         assert set(out["measurements"][0].keys()) == {"date"}
 
+    @needs_forced_tz
     def test_live_date_decode_is_utc_not_local(self):
         # Under the module's non-UTC TZ, a naive decode of this UTC-midnight
         # timestamp would roll the date back to 2025-01-14.
