@@ -9,10 +9,12 @@ paths. Covers cache-hit, the ``live=True`` branch, the always-live tools
 fictional tests.fixtures factories.
 """
 
+import ast
 import asyncio
 import json
 import os
 import time
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
@@ -93,10 +95,12 @@ def _force_non_utc_tz():
     guard (a naive decode of a UTC-midnight timestamp rolls back to the prior
     day).
 
-    Where the zone cannot be forced the module still runs, but under UTC - the
-    assertions hold and simply stop being tz-sensitive. A test that exists only
-    to exercise the shift carries `needs_forced_tz` so it skips rather than
-    passing vacuously.
+    Where the zone cannot be forced the module still runs, but under UTC, and
+    the date/epoch assertions below stop being tz guards - a naive decode or a
+    naive encode passes most of them. The two tests written for the shift alone
+    carry `needs_forced_tz` so they skip rather than passing vacuously, and
+    TestEveryConversionPinsTheZone carries the guarantee itself on every
+    platform by reading the source.
     """
     if not _TZ_CAN_BE_FORCED:
         yield
@@ -129,6 +133,58 @@ def cache(tmp_path):
 
     with patch.object(db, "DB_PATH", path):
         yield seed
+
+
+def _tool_source_calls(attr):
+    """Every `<x>.<attr>(...)` call under src/withings_mcp/tools/, with its site."""
+    root = Path(__file__).resolve().parents[1] / "src" / "withings_mcp" / "tools"
+    found = []
+    for path in sorted(root.glob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == attr
+            ):
+                found.append((f"{path.name}:{node.lineno}", node))
+    return found
+
+
+class TestEveryConversionPinsTheZone:
+    """What the fixture above guarantees, read off the source instead.
+
+    Forcing a western zone turns a dropped `tz=timezone.utc` into a failed
+    assertion, but only where `time.tzset` exists. This holds identically on
+    every platform, and it covers the encode direction, which on a runner
+    without tzset no assertion in this module can see.
+
+    Scoped to `tools/` on purpose: doctor.py decodes a token expiry for a
+    person reading a terminal, deliberately in that person's local time.
+    """
+
+    def test_every_fromtimestamp_names_a_zone(self):
+        calls = _tool_source_calls("fromtimestamp")
+        assert calls, "no fromtimestamp found - has the decode moved?"
+        naive = [
+            site
+            for site, node in calls
+            if not any(kw.arg == "tz" for kw in node.keywords) and len(node.args) < 2
+        ]
+        assert not naive, f"decodes in local time: {naive}"
+
+    def test_every_combine_names_a_zone(self):
+        calls = _tool_source_calls("combine")
+        assert calls, "no datetime.combine found - has the encode moved?"
+        naive = [
+            site
+            for site, node in calls
+            if not any(kw.arg == "tzinfo" for kw in node.keywords) and len(node.args) < 3
+        ]
+        assert not naive, f"encodes from local time: {naive}"
+
+    def test_the_naive_utc_helper_is_not_used(self):
+        """It returns a naive datetime, so it passes the check above by name."""
+        assert not _tool_source_calls("utcfromtimestamp")
 
 
 # --- withings_get_body ---
@@ -237,6 +293,7 @@ class TestGetBody:
             out = _payload(body_tools.withings_get_body(live=True))
         assert out["measurements"][0]["date"] == _TS_DATE
 
+    @needs_forced_tz
     def test_live_request_encodes_utc_window(self):
         # The request window is encoded as UTC-midnight epochs regardless of TZ.
         with patch.object(body_tools.api, "post", return_value={"measuregrps": [], "more": 0}) as p:
