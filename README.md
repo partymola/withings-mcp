@@ -127,14 +127,14 @@ withings-mcp --version    Print the installed package version
 uv pip install -e . && uv pip install pytest
 
 # Run tests (all use in-memory SQLite with fictional data)
-.venv/bin/python -m pytest tests/ -v
+.venv/bin/python -m pytest tests/ -v      # .venv\Scripts\python on Windows
 ```
 
 ## Security
 
 - **Read-only**: No tools modify data on Withings servers
 - **Local storage**: Health data stays in your local SQLite database
-- **Token storage**: OAuth tokens stored in `config/` (gitignored, file permissions 0600)
+- **Token storage**: OAuth tokens stored in `config/` (gitignored; created 0600 on POSIX - Windows ignores the mode and governs access by ACLs)
 - **Error messages**: Never contain health data values - only status codes
 - **Pre-commit hook**: An optional hook (`scripts/check-no-data.sh`) blocks database files and credentials from commits - install it with the one-liner in [CONTRIBUTING.md](https://github.com/partymola/withings-mcp/blob/main/CONTRIBUTING.md)
 

@@ -141,7 +141,8 @@ class TestRefreshToken:
             save.assert_called_once_with(auth.WITHINGS_TOKENS_PATH, auth._cached_tokens)
 
     def test_refresh_writes_token_file_to_disk(self):
-        # Exercise the real _save_json (write + chmod 600); paths point at tmp_path.
+        # Exercise the real _save_json (mkstemp at 0600, then atomic replace);
+        # paths point at tmp_path.
         body = {"access_token": "tok-new", "refresh_token": "ref-new", "expires_in": 10800}
         opener = _urlopen_returning({"status": 0, "body": body})
         with (

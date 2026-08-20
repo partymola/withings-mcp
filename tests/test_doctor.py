@@ -28,16 +28,22 @@ FAKE_ACCESS_TOKEN = "fake-access-token-0000"
 FAKE_REFRESH_TOKEN = "fake-refresh-token-0000"
 FAKE_USER_ID = 12345678
 
-# os.access ignores permission bits under CAP_DAC_OVERRIDE, so every
-# permissions test below is meaningless as root.
-# os.geteuid and os.mkfifo are POSIX-only, and the marker below is evaluated at
-# import: on Windows an attribute error here would take the whole module out
-# rather than skipping a test.
-# Windows has no mode bits and os.access there does not consult ACLs, so the
-# permission findings cannot fire at all - those tests assert a semantics that
-# platform does not have, and skip rather than being made to pass.
 _POSIX = sys.platform != "win32"
+
+# Windows has no mode bits, and os.access there consults neither those nor ACLs,
+# so the permission findings cannot fire at all. These tests assert a semantics
+# the platform does not have, and skip rather than being made to pass.
 skip_non_posix = pytest.mark.skipif(not _POSIX, reason="POSIX-only file semantics")
+
+# A separate reason from the one above: the case cannot even be constructed.
+skip_illegal_on_windows = pytest.mark.skipif(
+    not _POSIX, reason="`?` is not a legal Windows filename"
+)
+
+# os.access ignores permission bits under CAP_DAC_OVERRIDE, so every permissions
+# test below is meaningless as root. os.geteuid is POSIX-only and this is
+# evaluated at import, so the platform test has to be the left operand or a
+# Windows run dies here rather than skipping.
 skip_as_root = pytest.mark.skipif(
     _POSIX and os.geteuid() == 0, reason="root bypasses permission bits"
 )
@@ -247,13 +253,13 @@ class TestNoCheckCanEndTheRun:
 class TestAwkwardPaths:
     """Invariant 6 - the read-only URI must survive characters with URI meaning."""
 
-    # `?` is not a legal character in a Windows filename, so the case cannot be
-    # built there. `#` is legal on both, and it is the one the escaping is for.
+    # `#` is legal on both platforms and is the character the escaping exists
+    # for, so the Windows run still exercises `quote(os.fsencode(...))`.
     @pytest.mark.parametrize(
         "name",
         [
             "with#hash.db",
-            pytest.param("with?query.db", marks=skip_non_posix),
+            pytest.param("with?query.db", marks=skip_illegal_on_windows),
             "plain.db",
         ],
     )
@@ -628,6 +634,17 @@ class TestAuthPrerequisites:
             assert _severities(doctor.check_auth_prerequisites(), "auth callback") == {doctor.WARN}
 
     def test_a_free_callback_port_is_silent(self):
+        import socket
+
+        # Same guard as the sibling above: the real port may legitimately be
+        # taken on whichever machine this runs on, and six runners is six
+        # chances of it.
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            try:
+                probe.bind(("localhost", config.WITHINGS_CALLBACK_PORT))
+            except OSError:
+                pytest.skip("callback port already in use by something else")
+
         assert not _named(doctor.check_auth_prerequisites(), "auth callback")
 
 
