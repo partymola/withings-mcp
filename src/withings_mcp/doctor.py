@@ -115,10 +115,12 @@ def _timestamp_or_none(value) -> datetime | None:
     exotic: a token written with milliseconds instead of seconds lands tens of
     thousands of years out. A diagnostic must report that, not die on it.
 
-    Naive on purpose, unlike everything under `tools/`: the result is printed
-    for a person reading a terminal, so their own zone is the useful one. The
-    UTC pinning elsewhere is held by TestEveryConversionPinsTheZone, which is
-    scoped to `tools/` so it does not drag this one in.
+    Naive on purpose, and the only conversion here that is: the result is
+    printed for a person reading a terminal, so their own zone is the useful
+    one. A source-reading test in `tests/test_query_tools.py` requires every
+    other conversion in the package to name a zone and exempts this one by
+    function name, so moving it fails that test rather than widening the
+    exemption.
     """
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         return None
@@ -597,9 +599,9 @@ def check_auth_prerequisites() -> list[Finding]:
                     f"Port {config.WITHINGS_CALLBACK_PORT} appears to be in use, so "
                     "`withings-mcp auth` cannot receive the OAuth callback.",
                     "Free the port before authorising; it must match the callback URL "
-                    "registered with Withings and so cannot be changed. If nothing is "
-                    "listening, a socket from a recent `withings-mcp auth` may still be "
-                    "closing - retry in a few minutes.",
+                    "registered with Withings and so cannot be changed. On Windows, if "
+                    "nothing is listening, a socket from a recent `withings-mcp auth` "
+                    "may still be closing - retry in a few minutes.",
                 )
             )
 
