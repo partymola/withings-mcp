@@ -114,6 +114,11 @@ def _timestamp_or_none(value) -> datetime | None:
     Out-of-range values return None rather than raising, and they are not
     exotic: a token written with milliseconds instead of seconds lands tens of
     thousands of years out. A diagnostic must report that, not die on it.
+
+    Naive on purpose, unlike everything under `tools/`: the result is printed
+    for a person reading a terminal, so their own zone is the useful one. The
+    UTC pinning elsewhere is held by TestEveryConversionPinsTheZone, which is
+    scoped to `tools/` so it does not drag this one in.
     """
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         return None
@@ -577,8 +582,9 @@ def check_auth_prerequisites() -> list[Finding]:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         # Here SO_REUSEADDR only means "ignore a TIME_WAIT socket left by the
         # last auth run". Windows reads it as permission to bind over a live
-        # listener, so the probe would succeed against a port genuinely in use
-        # and the check could never fire.
+        # listener, so with it set the check could never fire there. Without it
+        # a recently closed auth run reads as busy for a few minutes, which on
+        # a WARN is the better half of the trade.
         if sys.platform != "win32":
             probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
@@ -588,10 +594,12 @@ def check_auth_prerequisites() -> list[Finding]:
                 Finding(
                     "auth callback",
                     WARN,
-                    f"Port {config.WITHINGS_CALLBACK_PORT} is in use, so `withings-mcp auth` "
-                    "cannot receive the OAuth callback.",
+                    f"Port {config.WITHINGS_CALLBACK_PORT} appears to be in use, so "
+                    "`withings-mcp auth` cannot receive the OAuth callback.",
                     "Free the port before authorising; it must match the callback URL "
-                    "registered with Withings and so cannot be changed.",
+                    "registered with Withings and so cannot be changed. If nothing is "
+                    "listening, a socket from a recent `withings-mcp auth` may still be "
+                    "closing - retry in a few minutes.",
                 )
             )
 
