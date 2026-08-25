@@ -16,7 +16,7 @@ MCP server for the [Withings Health API](https://developer.withings.com/) with O
 - Broad Withings coverage: 17 body-composition metrics plus sleep, daily activity, workouts, and ECG/AFib
 - Automatic OAuth token refresh (access tokens: 3h, refresh tokens: 1 year)
 - Zero dependencies beyond `mcp` (HTTP via stdlib)
-- Python 3.13+
+- Python 3.13+ (tested on 3.13 and 3.14, on Linux, macOS and Windows, in CI)
 
 ## Tools
 
@@ -35,7 +35,7 @@ The cache-backed query tools auto-sync when their data is stale, and accept `liv
 
 ## Prerequisites
 
-- Python 3.13+
+- Python 3.13+ (tested on 3.13 and 3.14, on Linux, macOS and Windows, in CI)
 - [uv](https://docs.astral.sh/uv/) (recommended) or pip
 - A Withings developer account and registered application
 
