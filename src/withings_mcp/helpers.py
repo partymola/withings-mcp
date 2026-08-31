@@ -7,7 +7,10 @@ import re
 from datetime import date, timedelta
 from typing import Any
 
+from mcp.server.mcpserver.exceptions import ToolError
+
 from .config import WITHINGS_CLIENT_PATH, WITHINGS_TOKENS_PATH
+from .errors import InvalidDateError, WithingsError
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +92,9 @@ def _parse_single_date(date_str: str | None, default: date, is_end: bool) -> dat
     if re.match(r"^\d{4}-\d{2}-\d{2}$", date_str):
         return date.fromisoformat(date_str)
 
-    raise ValueError(f"Invalid date '{date_str}'. Use YYYY-MM-DD, YYYY-MM, or Nd (e.g. '30d').")
+    raise InvalidDateError(
+        f"Invalid date '{date_str}'. Use YYYY-MM-DD, YYYY-MM, or Nd (e.g. '30d')."
+    )
 
 
 # --- Formatting helpers ---
@@ -119,7 +124,12 @@ def format_distance(meters: float | None) -> str:
 
 
 def require_auth(func):
-    """Decorator that checks credentials exist before calling a tool."""
+    """Gate a tool on credentials, and let its own errors keep their message.
+
+    `mcp` 2.1 keeps a `ToolError`'s text and replaces every other exception's
+    with "Error executing tool <name>", so a WithingsError is converted and
+    nothing else is. Why only those: errors.py.
+    """
 
     @functools.wraps(func)
     async def wrapper(*args, **kwargs):
@@ -129,7 +139,10 @@ def require_auth(func):
                     "error": "Withings not configured. Run: withings-mcp auth",
                 }
             )
-        return await func(*args, **kwargs)
+        try:
+            return await func(*args, **kwargs)
+        except WithingsError as e:
+            raise ToolError(str(e)) from e
 
     return wrapper
 

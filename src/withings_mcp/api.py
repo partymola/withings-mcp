@@ -12,19 +12,20 @@ import urllib.request
 from urllib.parse import urlencode
 
 from .auth import RefreshNetworkError, TokenRefused, refresh_token
+from .errors import WithingsError
 
 logger = logging.getLogger(__name__)
 
 
-class WithingsAuthError(Exception):
+class WithingsAuthError(WithingsError):
     """Token expired or invalid, re-auth needed."""
 
 
-class WithingsRateLimitError(Exception):
+class WithingsRateLimitError(WithingsError):
     """Rate limited (status 601/602). Retry after delay."""
 
 
-class WithingsAPIError(Exception):
+class WithingsAPIError(WithingsError):
     """General API error."""
 
 

@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- `mcp` 2.1.1, up from 2.0.0. That release keeps a `ToolError`'s text and replaces every other exception's with `Error executing tool <name>`, which on its own would have left a tool answering a date it cannot parse, or an expired token, with nothing but that line. The errors this package raises as its own types now travel as `ToolError`, so a caller still gets the text that says what to do. Anything unplanned keeps the new behaviour and stays in the server's log, which is where the absolute path in a failure to read the token file or the cache belongs.
+- `WithingsAuthError`, `WithingsRateLimitError`, `WithingsAPIError`, `TokenRefused` and `RefreshNetworkError` now share a `WithingsError` base. That base and `InvalidDateError` live in the new `withings_mcp.errors`. Each class keeps the base it had, so `except ValueError` and `except RuntimeError` still catch what they caught.
+
 ## [0.5.0] - 2026-08-21
 
 ### Fixed

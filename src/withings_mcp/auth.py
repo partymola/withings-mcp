@@ -31,6 +31,7 @@ from .config import (
     WITHINGS_TOKEN_URL,
     WITHINGS_TOKENS_PATH,
 )
+from .errors import WithingsError
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,7 @@ class _CallbackServer(HTTPServer):
         super().server_bind()
 
 
-class TokenRefused(RuntimeError):
+class TokenRefused(WithingsError, RuntimeError):
     """The server judged the credentials and rejected them.
 
     The only failure that warrants telling the user to re-authorise, which
@@ -79,10 +80,10 @@ class TokenRefused(RuntimeError):
     """
 
 
-class RefreshNetworkError(RuntimeError):
+class RefreshNetworkError(WithingsError, RuntimeError):
     """The refresh request never got an answer.
 
-    Subclasses RuntimeError so existing callers are unaffected, but is
+    Keeps RuntimeError so existing callers are unaffected, but is
     distinguishable: an unreachable server says nothing about whether the
     credentials are still good, and telling the user to re-authorise would
     rotate a token file another host may own.
