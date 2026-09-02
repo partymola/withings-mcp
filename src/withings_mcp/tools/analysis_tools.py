@@ -4,6 +4,7 @@ import logging
 import re
 from collections import defaultdict
 from datetime import date, timedelta
+from typing import Literal
 
 import anyio
 
@@ -158,7 +159,26 @@ def _trend_activity(conn, start_date: str, end_date: str, period: str) -> dict:
     return {"periods": periods, "data_type": "activity", "aggregation": period}
 
 
-def _compare_periods(conn, data_type: str, compare_str: str) -> dict:
+_TREND_FNS = {
+    "body": _trend_body,
+    "sleep": _trend_sleep,
+    "activity": _trend_activity,
+}
+# Compare mode reads its own tables, so it has to hold the same types as the
+# dispatch the schema is built from.
+_COMPARE_QUERY_FNS = {
+    "body": db.query_body,
+    "sleep": db.query_sleep,
+    "activity": db.query_activities,
+}
+
+# Unpacked from the dispatch rather than written out, so the schema offers
+# exactly the types there is a trend function for.
+TrendType = Literal[*_TREND_FNS]
+TrendPeriod = Literal["weekly", "monthly", "quarterly"]
+
+
+def _compare_periods(conn, data_type: TrendType, compare_str: str) -> dict:
     """Compare two time periods. Format: 'last_30d vs previous_30d'."""
     # Parse the comparison string
     parts = re.split(r"\s+vs\s+", compare_str.strip(), maxsplit=1)
@@ -212,13 +232,7 @@ def _compare_periods(conn, data_type: str, compare_str: str) -> dict:
     if len(ranges) != 2:
         return {"error": "Need exactly two periods to compare."}
 
-    query_fn = {
-        "body": db.query_body,
-        "sleep": db.query_sleep,
-        "activity": db.query_activities,
-    }.get(data_type)
-    if not query_fn:
-        return {"error": f"Cannot compare data_type '{data_type}'. Use: body, sleep, or activity."}
+    query_fn = _COMPARE_QUERY_FNS[data_type]
 
     period_a = query_fn(conn, ranges[0][0].isoformat(), ranges[0][1].isoformat())
     period_b = query_fn(conn, ranges[1][0].isoformat(), ranges[1][1].isoformat())
@@ -254,8 +268,8 @@ def _compare_periods(conn, data_type: str, compare_str: str) -> dict:
 @mcp.tool()
 @require_auth
 async def withings_trends(
-    data_type: str = "body",
-    period: str = "monthly",
+    data_type: TrendType = "body",
+    period: TrendPeriod = "monthly",
     start_date: str | None = None,
     end_date: str | None = None,
     compare: str | None = None,
@@ -292,16 +306,7 @@ async def withings_trends(
             start, end = parse_date(start_date, end_date, default_days=365)
             s, e = start.isoformat(), end.isoformat()
 
-            if data_type == "body":
-                result = _trend_body(conn, s, e, period)
-            elif data_type == "sleep":
-                result = _trend_sleep(conn, s, e, period)
-            elif data_type == "activity":
-                result = _trend_activity(conn, s, e, period)
-            else:
-                result = {
-                    "error": f"Unknown data_type '{data_type}'. Use: body, sleep, or activity."
-                }
+            result = _TREND_FNS[data_type](conn, s, e, period)
 
         conn.close()
         return result

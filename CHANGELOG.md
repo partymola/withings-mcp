@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-09-02
+
+### Fixed
+
+- `withings_trends` reads the aggregation period it was asked for. Any value other than `weekly` or `quarterly` fell through to monthly, so a period the tool did not recognise returned twelve months of correct figures labelled with whatever was sent. `"aggregation": "not-a-period"` sat beside a full year of real data. Nothing was empty and nothing failed, which made it worse than an error: the numbers were right and the label describing them was not.
+
+### Changed
+
+- `data_type` and `period` accept only their listed values, and those values are declared in the tool's schema rather than checked inside it. A caller sending anything else now gets a validation error naming the accepted values, where an unrecognised `data_type` previously returned `{"error": ...}` after the tool had already run a sync for it. The `data_type` values a caller is offered are exactly the ones the tool can answer, because the schema is built from the dispatch it reads.
+
 ## [0.6.0] - 2026-08-31
 
 ### Changed
@@ -101,7 +111,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ECG and AFib detection support via `withings_get_heart` (live, not cached).
 - Pre-commit hook (`scripts/check-no-data.sh`) blocking commit of databases, tokens, and other secrets.
 
-[Unreleased]: https://github.com/partymola/withings-mcp/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/partymola/withings-mcp/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/partymola/withings-mcp/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/partymola/withings-mcp/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/partymola/withings-mcp/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/partymola/withings-mcp/compare/v0.3.0...v0.4.0
