@@ -7,7 +7,9 @@ import anyio
 
 from .. import api, db
 from ..config import WITHINGS_MEASURE_V2_URL
+from ..errors import UnknownFilterValue
 from ..helpers import (
+    WORKOUT_CATEGORIES,
     format_distance,
     format_duration,
     format_response,
@@ -74,8 +76,40 @@ def _fetch_activity_live(start_date, end_date):
     return results
 
 
-def _fetch_workouts_live(start_date, end_date, category=None):
-    """Fetch workout sessions from the API."""
+_KNOWN_CATEGORIES = frozenset(WORKOUT_CATEGORIES.values())
+
+
+def _as_a_category(category: str) -> str | None:
+    """The filter as the query layers will use it, or None if it names none.
+
+    Returning the normalised value is what keeps this check and the two query
+    paths on one fold, rather than each applying its own to a raw string that
+    only one of them has trimmed. Every stored category is ASCII, since only
+    `resolve_workout_category` writes one, so `lower` is enough.
+
+    The empty string names no category: it selects every workout, so reading
+    it as a filter answers a narrowed question with everything.
+    """
+    wanted = category.strip().lower()
+    if wanted and any(wanted in name for name in _KNOWN_CATEGORIES):
+        return wanted
+    return None
+
+
+def _recorded_categories() -> list[str]:
+    conn = db.get_db()
+    try:
+        return db.workout_categories(conn)
+    finally:
+        conn.close()
+
+
+def _fetch_workouts_live(start_date, end_date, category_lower=None):
+    """Fetch workout sessions from the API.
+
+    `category_lower` is matched against the resolved category name as given,
+    so it must already be lower case: `_as_a_category` is what produces one.
+    """
     results = []
     offset = 0
 
@@ -96,7 +130,7 @@ def _fetch_workouts_live(start_date, end_date, category=None):
             cat = entry.get("category", 36)
             cat_name = resolve_workout_category(cat)
 
-            if category and category.lower() not in cat_name:
+            if category_lower and category_lower not in cat_name:
                 continue
 
             start_ts = entry.get("startdate", 0)
@@ -193,8 +227,19 @@ async def withings_get_workouts(
         start_date: Start date as "YYYY-MM-DD", "YYYY-MM", or "90d".
             Default: last 90 days.
         end_date: End date as "YYYY-MM-DD". Default: today.
-        category: Filter by workout type, e.g. "cycling", "walk", "run".
-            Case-insensitive partial match.
+        category: Filter by workout type, case-insensitive partial match. A
+            value matching none of the categories below is refused, naming
+            the ones your cache holds.
+            Options: badminton, baseball, basketball, bmx, bodyboard, boxing,
+            calisthenics, climbing, cycling, dancing, elliptical, fencing,
+            football, golf, handball, hiking, hockey, horse_riding,
+            ice_hockey, ice_skating, indoor_cycling, indoor_running,
+            indoor_walk, kitesurfing, martial_arts, multi_sport, other,
+            pilates, rowing, rugby, run, skating, skiing, snowboarding,
+            soccer, squash, surfing, swimming, table_tennis, tennis,
+            volleyball, walk, waterpolo, weightlifting, windsurfing,
+            wrestling, yoga, zumba.
+
         live: If true, fetch from Withings API instead of cache.
 
     Returns workout sessions sorted by date with type, duration,
@@ -203,14 +248,34 @@ async def withings_get_workouts(
     """
     start, end = parse_date(start_date, end_date, default_days=90)
 
+    wanted = None
+    if category is not None:
+        wanted = _as_a_category(category)
+        if wanted is None:
+            # Withings defines the categories and this package names them, so
+            # a value matching none of them can filter nothing on either path.
+            # The refusal names what the cache holds rather than all of them:
+            # the full list is in this tool's schema, where a model reads it
+            # before calling, and the few recorded are what it can act on. A
+            # live call is asking past the cache, so it is not told about one.
+            recorded = [] if live else await anyio.to_thread.run_sync(_recorded_categories)
+            raise UnknownFilterValue(
+                f"No workout category matching '{category}'. "
+                + (
+                    f"Categories in your cache: {', '.join(recorded)}."
+                    if recorded
+                    else "This tool's category list has the values Withings reports."
+                )
+            )
+
     if live:
-        entries = await anyio.to_thread.run_sync(lambda: _fetch_workouts_live(start, end, category))
+        entries = await anyio.to_thread.run_sync(lambda: _fetch_workouts_live(start, end, wanted))
     else:
         await anyio.to_thread.run_sync(lambda: auto_sync_if_stale("workouts"))
 
         def _query():
             conn = db.get_db()
-            rows = db.query_workouts(conn, start.isoformat(), end.isoformat(), category)
+            rows = db.query_workouts(conn, start.isoformat(), end.isoformat(), wanted)
             conn.close()
             for r in rows:
                 r["type"] = r.get("category_name", "other")

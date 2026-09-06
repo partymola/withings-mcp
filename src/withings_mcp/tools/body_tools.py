@@ -7,6 +7,7 @@ import anyio
 
 from .. import api, db
 from ..config import WITHINGS_MEASURE_URL
+from ..errors import UnknownFilterValue
 from ..helpers import (
     MEASURE_TYPES,
     format_response,
@@ -21,6 +22,7 @@ from .sync_tools import auto_sync_if_stale
 logger = logging.getLogger(__name__)
 
 _BODY_MEASTYPES = ",".join(str(k) for k in MEASURE_TYPES.keys())
+_KNOWN_METRICS = frozenset(MEASURE_TYPES.values())
 
 
 def _fetch_live(start_date, end_date):
@@ -86,9 +88,15 @@ async def withings_get_body(
             relative days. Default: last 30 days.
         end_date: End date as "YYYY-MM-DD". Default: today.
         metrics: Comma-separated metric filter, e.g. "weight_kg,fat_pct".
-            Default: all available metrics. Options: weight_kg, fat_pct,
+            Default: all available metrics. Names match exactly and are
+            case-sensitive; one that is not on this list is refused, naming
+            them.
+            Options: weight_kg, height_m, lean_mass_kg, fat_pct,
             fat_mass_kg, muscle_mass_kg, hydration_kg, bone_mass_kg,
-            heart_rate, systolic_bp, diastolic_bp, spo2_pct.
+            heart_rate, systolic_bp, diastolic_bp, spo2_pct, temperature_c,
+            body_temperature_c, pulse_wave_velocity, visceral_fat_index,
+            basal_metabolic_rate.
+
         live: If true, fetch from Withings API instead of cache.
 
     Returns measurements sorted by date, one entry per measurement group.
@@ -96,6 +104,18 @@ async def withings_get_body(
     withings_get_activity instead.
     """
     start, end = parse_date(start_date, end_date, default_days=30)
+
+    wanted = None
+    if metrics is not None:
+        # Withings defines the measure types and this package names them, so
+        # the accepted values are a list rather than whatever a cache holds.
+        wanted = [m.strip() for m in metrics.split(",") if m.strip()]
+        unknown = [m for m in wanted if m not in _KNOWN_METRICS]
+        if unknown or not wanted:
+            raise UnknownFilterValue(
+                f"No body metric named {', '.join(unknown) or metrics!r}. "
+                f"Metrics: {', '.join(sorted(_KNOWN_METRICS))}."
+            )
 
     if live:
         entries = await anyio.to_thread.run_sync(lambda: _fetch_live(start, end))
@@ -110,11 +130,17 @@ async def withings_get_body(
 
         entries = await anyio.to_thread.run_sync(_query)
 
-    # Filter metrics if requested
-    if metrics:
-        keep = {m.strip() for m in metrics.split(",")}
-        keep.add("date")
-        entries = [{k: v for k, v in e.items() if k in keep} for e in entries]
+    if wanted:
+        # By value and not by key: a cached row is SELECT *, so every metric
+        # column is present as a key and a group holding no weight still
+        # carries one. Keys are dropped as well as groups, or a filtered
+        # reply from the cache would carry nulls the live path never emits.
+        keep = set(wanted)
+        entries = [
+            {k: v for k, v in e.items() if k == "date" or (k in keep and v is not None)}
+            for e in entries
+        ]
+        entries = [e for e in entries if set(e) - {"date"}]
 
     if not entries:
         return format_response(

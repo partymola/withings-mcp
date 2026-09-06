@@ -20,6 +20,17 @@ class WithingsError(Exception):
     """
 
 
+class UnknownFilterValue(WithingsError):
+    """A filter naming something this server has no such thing to filter on.
+
+    Withings defines the measure types and the workout categories, and this
+    package holds the names for them, so the accepted values are a list it
+    can state rather than a guess. Its message names them, which is why it
+    must reach the model: a filter it cannot act on leaves it choosing
+    between a typo and an empty period with nothing to tell them apart.
+    """
+
+
 class InvalidDateError(WithingsError, ValueError):
     """A date argument the tools cannot parse.
 

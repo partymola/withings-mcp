@@ -235,16 +235,29 @@ def query_activities(conn: sqlite3.Connection, start_date: str, end_date: str) -
     return [dict(r) for r in rows]
 
 
+def workout_categories(conn: sqlite3.Connection) -> list[str]:
+    """Every workout category recorded, in the spelling it was stored under."""
+    rows = conn.execute(
+        "SELECT DISTINCT category_name FROM workouts "
+        "WHERE category_name IS NOT NULL ORDER BY category_name"
+    ).fetchall()
+    return [row[0] for row in rows]
+
+
 def query_workouts(
     conn: sqlite3.Connection, start_date: str, end_date: str, category: str | None = None
 ) -> list[dict]:
     """Query workouts within a date range, optionally filtered by category."""
     if category:
+        # `_` and `%` are LIKE wildcards, and `_` is a real character in
+        # category names like horse_riding, so a caller filtering on one
+        # would otherwise match every workout rather than none.
+        pattern = category.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         rows = conn.execute(
             """SELECT * FROM workouts
-            WHERE date >= ? AND date <= ? AND LOWER(category_name) LIKE ?
+            WHERE date >= ? AND date <= ? AND LOWER(category_name) LIKE ? ESCAPE '\\'
             ORDER BY date""",
-            (start_date, end_date, f"%{category.lower()}%"),
+            (start_date, end_date, f"%{pattern}%"),
         ).fetchall()
     else:
         rows = conn.execute(

@@ -18,6 +18,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 
 from tests.fixtures import (
     fake_activity,
@@ -325,13 +326,15 @@ class TestGetBody:
         assert "measurements" not in out
         assert out["hint"] == "Try live=True to fetch directly from the API."
 
-    def test_unknown_metric_filter_yields_date_only_entries(self, cache):
+    def test_unknown_metric_filter_is_refused(self, cache):
+        # It used to strip every value and answer with bare dates, which reads
+        # as measurements that exist and hold nothing. What the refusal says,
+        # and the same class on withings_get_workouts, is in
+        # tests/test_filter_arguments.py.
         cache(db.save_body_measurement, fake_body_db_row(date="2026-01-10", grpid=1001))
-        out = _payload(
-            body_tools.withings_get_body("2026-01-01", "2026-01-31", metrics="no_such_metric")
-        )
-        assert out["count"] == 1  # the row is still returned, just stripped to date
-        assert set(out["measurements"][0].keys()) == {"date"}
+        # require_auth has already converted it by the time it escapes the tool.
+        with pytest.raises(ToolError, match="no_such_metric"):
+            _run(body_tools.withings_get_body("2026-01-01", "2026-01-31", metrics="no_such_metric"))
 
     @needs_forced_tz
     def test_live_date_decode_is_utc_not_local(self):

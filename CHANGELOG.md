@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-09-06
+
+### Fixed
+
+- `withings_get_body` refuses a `metrics` name it cannot report, instead of stripping every value out of the reply. A typo returned one entry per measurement group carrying nothing but a date, which reads as measurements that happened and hold nothing rather than as a filter that could not be used. The refusal names the value it could not use and every metric name it accepts. Three of those (`height_m`, `body_temperature_c`, `pulse_wave_velocity`) have no column in the cache, so they are answered live only.
+- A measurement group that recorded none of the metrics you asked for is left out, rather than returned as a bare date.
+- `withings_get_workouts` refuses a `category` matching none of the workout types Withings reports, instead of answering with no workouts at all, which reads as a period you did not train in. The refusal names the categories your own cache holds, since those are the ones you can act on, and the tool's description lists every category for the times you want one you have not recorded yet.
+
+### Changed
+
+- `metrics=""` and `category=""` are refused rather than read as no filter at all. Both previously returned everything, which answers a narrower question than the one asked.
+
 ## [0.7.0] - 2026-09-02
 
 ### Fixed
@@ -111,7 +123,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ECG and AFib detection support via `withings_get_heart` (live, not cached).
 - Pre-commit hook (`scripts/check-no-data.sh`) blocking commit of databases, tokens, and other secrets.
 
-[Unreleased]: https://github.com/partymola/withings-mcp/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/partymola/withings-mcp/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/partymola/withings-mcp/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/partymola/withings-mcp/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/partymola/withings-mcp/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/partymola/withings-mcp/compare/v0.4.0...v0.5.0
