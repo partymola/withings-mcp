@@ -136,7 +136,7 @@ uv pip install -e . && uv pip install pytest
 - **Local storage**: Health data stays in your local SQLite database
 - **Token storage**: OAuth tokens stored in `config/` (gitignored; created 0600 on POSIX - Windows ignores the mode and governs access by ACLs)
 - **Error messages**: Never contain health data values - only status codes
-- **Pre-commit hook**: An optional hook (`scripts/check-no-data.sh`) blocks database files and credentials from commits - install it with the one-liner in [CONTRIBUTING.md](https://github.com/partymola/withings-mcp/blob/main/CONTRIBUTING.md)
+- **Pre-commit hook**: An optional hook (`scripts/check-no-data.sh`) blocks database files, files under `config/` and large files from commits. It does not read file contents. Install it with the one-liner in [CONTRIBUTING.md](https://github.com/partymola/withings-mcp/blob/main/CONTRIBUTING.md)
 
 ## Contributing
 
