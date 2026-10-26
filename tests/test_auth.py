@@ -1,13 +1,14 @@
 """Tests for OAuth token management (auth.py).
 
 Exercises the real auth logic - no network, no real OAuth, no secrets.
-refresh_token runs against a mocked HTTP layer and a frozen clock: the
-5-minute expiry buffer and its boundary, the refresh-token grant, the lazy
-load of cached credentials, refresh-token preservation, and every error
-branch. _exchange_code covers the same transport failures plus the guards
-that keep one from escaping into the callback handler thread. The rest is
-offline: how the token file is written and replaced, and the client-file
-shapes that must reach the setup prompts rather than the browser.
+refresh_token runs against a mocked HTTP layer, a frozen clock and real
+credential files in a temp dir: the 5-minute expiry buffer and its boundary,
+the refresh-token grant, refresh-token preservation, a token file another
+process replaces, and every error branch. _exchange_code covers the same
+transport failures plus the guards that keep one from escaping into the
+callback handler thread. The rest is offline: how the token file is written
+and replaced, and the client-file shapes that must reach the setup prompts
+rather than the browser.
 """
 
 import json
@@ -15,7 +16,7 @@ import os
 import socket
 import sys
 import urllib.error
-from unittest.mock import MagicMock, Mock, call, patch
+from unittest.mock import MagicMock, Mock, patch
 from urllib.parse import parse_qs
 
 import pytest
@@ -58,61 +59,68 @@ def _tokens(access="tok-old", refresh="ref-old", expires_at=_NOW + 10_000, useri
 _CREDS = {"client_id": "client-xyz", "client_secret": "secret-xyz"}
 
 
+#: The directory `_isolate_auth` created for the running test; empty otherwise.
+_ISOLATED = {}
+
+
 @pytest.fixture(autouse=True)
 def _isolate_auth(tmp_path):
-    """Reset the module token caches and redirect the token file off the real one.
+    """Point the credential files at a temp dir, off the production ones.
 
-    _save_json is mocked in every refresh test, but pointing the paths at a temp
-    dir as well guarantees no test can ever touch the production credential files.
+    Also clears a grant held after a failed save, which outlives the test that
+    failed the save.
     """
-    with (
-        patch.object(auth, "_cached_tokens", None),
-        patch.object(auth, "_cached_creds", None),
-        patch.object(auth, "WITHINGS_TOKENS_PATH", tmp_path / "withings_tokens.json"),
-        patch.object(auth, "WITHINGS_CLIENT_PATH", tmp_path / "withings_client.json"),
-    ):
-        yield
+    _ISOLATED["root"] = tmp_path
+    try:
+        with (
+            patch.object(auth, "WITHINGS_TOKENS_PATH", tmp_path / "withings_tokens.json"),
+            patch.object(auth, "WITHINGS_CLIENT_PATH", tmp_path / "withings_client.json"),
+            patch.object(auth, "_unsaved", None),
+        ):
+            yield
+    finally:
+        _ISOLATED.clear()
+
+
+def _refuse_unless_isolated(path):
+    """Fail the test rather than touch a path outside its temp dir.
+
+    The refresh tests write real files at the paths `auth` reads, so if the
+    fixture's patch slips those are the live credentials. Checked against the
+    directory the fixture created, not against the patched paths.
+    """
+    root = _ISOLATED.get("root")
+    if root is None or not path.resolve().is_relative_to(root.resolve()):
+        pytest.fail(f"refusing to write {path.name} outside the isolated directory")
 
 
 class TestRefreshToken:
-    def test_returns_cached_token_when_fresh(self):
+    def test_returns_the_stored_token_when_fresh(self):
+        _write(_tokens(expires_at=_NOW + 10_000))
         opener = Mock()
-        with (
-            _frozen_time(),
-            patch.object(auth, "_cached_tokens", _tokens(expires_at=_NOW + 10_000)),
-            patch.object(auth, "_cached_creds", dict(_CREDS)),
-            patch("withings_mcp.auth.urllib.request.urlopen", opener),
-        ):
+        with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", opener):
             assert auth.refresh_token() == "tok-old"
         opener.assert_not_called()  # no HTTP when the token is comfortably valid
 
-    def test_returns_cached_just_outside_buffer(self):
-        # expires_at is 301s away: time.time() < expires_at - 300 holds -> cached.
+    def test_returns_the_stored_token_just_outside_buffer(self):
+        # expires_at is 301s away: time.time() < expires_at - 300 holds -> stored.
+        _write(_tokens(expires_at=_NOW + 301))
         opener = Mock()
-        with (
-            _frozen_time(),
-            patch.object(auth, "_cached_tokens", _tokens(expires_at=_NOW + 301)),
-            patch.object(auth, "_cached_creds", dict(_CREDS)),
-            patch("withings_mcp.auth.urllib.request.urlopen", opener),
-        ):
+        with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", opener):
             assert auth.refresh_token() == "tok-old"
         opener.assert_not_called()
 
     def test_refreshes_at_buffer_boundary(self):
         # expires_at exactly 300s away: the < comparison fails -> refresh fires.
+        _write(_tokens(expires_at=_NOW + 300))
         body = {"access_token": "tok-new", "refresh_token": "ref-new", "expires_in": 10800}
         opener = _urlopen_returning({"status": 0, "body": body})
-        with (
-            _frozen_time(),
-            patch.object(auth, "_cached_tokens", _tokens(expires_at=_NOW + 300)),
-            patch.object(auth, "_cached_creds", dict(_CREDS)),
-            patch.object(auth, "_save_json"),
-            patch("withings_mcp.auth.urllib.request.urlopen", opener),
-        ):
+        with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", opener):
             assert auth.refresh_token() == "tok-new"
         opener.assert_called_once()
 
-    def test_refresh_updates_cache_and_persists(self):
+    def test_refresh_sends_the_stored_grant_and_persists_the_result(self):
+        _write(_tokens(expires_at=_NOW - 1))
         body = {
             "access_token": "tok-new",
             "refresh_token": "ref-new",
@@ -120,36 +128,28 @@ class TestRefreshToken:
             "expires_in": 10800,
         }
         opener = _urlopen_returning({"status": 0, "body": body})
-        with (
-            _frozen_time(),
-            patch.object(auth, "_cached_tokens", _tokens(expires_at=_NOW - 1)),
-            patch.object(auth, "_cached_creds", dict(_CREDS)),
-            patch.object(auth, "_save_json") as save,
-            patch("withings_mcp.auth.urllib.request.urlopen", opener),
-        ):
+        with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", opener):
             auth.refresh_token()
-            assert auth._cached_tokens["access_token"] == "tok-new"
-            assert auth._cached_tokens["refresh_token"] == "ref-new"
-            assert auth._cached_tokens["userid"] == 99
-            # expires_at is stamped from the frozen clock plus expires_in.
-            assert auth._cached_tokens["expires_at"] == _NOW + 10800
-            # The outgoing grant carries the refresh_token flow with the old token.
-            sent = _sent_form(opener)
-            assert sent["grant_type"] == "refresh_token"
-            assert sent["refresh_token"] == "ref-old"
-            assert sent["client_id"] == "client-xyz"
-            # The updated cache is what gets persisted, to the token path.
-            save.assert_called_once_with(auth.WITHINGS_TOKENS_PATH, auth._cached_tokens)
+        stored = _stored()
+        assert stored["access_token"] == "tok-new"
+        assert stored["refresh_token"] == "ref-new"
+        assert stored["userid"] == 99
+        # expires_at is stamped from the frozen clock plus expires_in.
+        assert stored["expires_at"] == _NOW + 10800
+        # The outgoing grant carries the refresh_token flow with the old token.
+        sent = _sent_form(opener)
+        assert sent["grant_type"] == "refresh_token"
+        assert sent["refresh_token"] == "ref-old"
+        assert sent["client_id"] == "client-xyz"
 
     def test_refresh_writes_token_file_to_disk(self):
         # Exercise the real _save_json (mkstemp at 0600, then atomic replace);
         # paths point at tmp_path.
+        _write(_tokens(expires_at=_NOW - 1))
         body = {"access_token": "tok-new", "refresh_token": "ref-new", "expires_in": 10800}
         opener = _urlopen_returning({"status": 0, "body": body})
         with (
             _frozen_time(),
-            patch.object(auth, "_cached_tokens", _tokens(expires_at=_NOW - 1)),
-            patch.object(auth, "_cached_creds", dict(_CREDS)),
             patch("withings_mcp.auth.urllib.request.urlopen", opener),
         ):
             auth.refresh_token()
@@ -165,45 +165,31 @@ class TestRefreshToken:
 
     def test_refresh_preserves_old_refresh_token_when_omitted(self):
         # A refresh response without a new refresh_token keeps the old one.
+        _write(_tokens(refresh="ref-keep", expires_at=_NOW - 1))
         body = {"access_token": "tok-new", "expires_in": 10800}
         opener = _urlopen_returning({"status": 0, "body": body})
-        with (
-            _frozen_time(),
-            patch.object(auth, "_cached_tokens", _tokens(refresh="ref-keep", expires_at=_NOW - 1)),
-            patch.object(auth, "_cached_creds", dict(_CREDS)),
-            patch.object(auth, "_save_json"),
-            patch("withings_mcp.auth.urllib.request.urlopen", opener),
-        ):
+        with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", opener):
             auth.refresh_token()
-            assert auth._cached_tokens["refresh_token"] == "ref-keep"
-            assert auth._cached_tokens["userid"] == 7  # old userid preserved too
+        assert _stored()["refresh_token"] == "ref-keep"
+        assert _stored()["userid"] == 7  # old userid preserved too
 
-    def test_lazy_loads_cached_credentials_from_disk(self):
-        # With both caches None, refresh_token loads tokens then creds via _load_json.
-        opener = Mock()
-        with (
-            _frozen_time(),
-            patch.object(auth, "_cached_tokens", None),
-            patch.object(auth, "_cached_creds", None),
-            patch.object(
-                auth, "_load_json", side_effect=[_tokens(expires_at=_NOW + 10_000), dict(_CREDS)]
-            ) as load,
-            patch("withings_mcp.auth.urllib.request.urlopen", opener),
-        ):
+    def test_a_valid_token_does_not_need_the_client_file(self):
+        """Only a refresh uses it, so a moment when it cannot be read must not
+        refuse a token that needs no refresh."""
+        _write(_tokens(expires_at=_NOW + 10_000), creds=None)
+        with _frozen_time():
             assert auth.refresh_token() == "tok-old"
-        # tokens are loaded from the token path, creds from the client path, in order.
-        assert load.call_args_list == [
-            call(auth.WITHINGS_TOKENS_PATH),
-            call(auth.WITHINGS_CLIENT_PATH),
-        ]
-        opener.assert_not_called()
+
+    def test_a_stored_token_with_no_access_token_is_refreshed_rather_than_sent(self):
+        _write(_tokens(access="", expires_at=_NOW + 10_000))
+        body = {"access_token": "tok-new", "refresh_token": "ref-new", "expires_in": 10800}
+        opener = _urlopen_returning({"status": 0, "body": body})
+        with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", opener):
+            assert auth.refresh_token() == "tok-new"
 
     def test_expired_without_refresh_token_raises(self):
-        with (
-            _frozen_time(),
-            patch.object(auth, "_cached_tokens", _tokens(refresh="", expires_at=_NOW - 1)),
-            patch.object(auth, "_cached_creds", dict(_CREDS)),
-        ):
+        _write(_tokens(refresh="", expires_at=_NOW - 1))
+        with _frozen_time():
             with pytest.raises(RuntimeError):
                 auth.refresh_token()
 
@@ -214,27 +200,462 @@ class TestRefreshToken:
         class alone would pass whichever of the two was raised - and the two
         lead to opposite advice downstream.
         """
+        _write(_tokens(expires_at=_NOW - 1))
         opener = _urlopen_returning({"status": 401})
-        with (
-            _frozen_time(),
-            patch.object(auth, "_cached_tokens", _tokens(expires_at=_NOW - 1)),
-            patch.object(auth, "_cached_creds", dict(_CREDS)),
-            patch("withings_mcp.auth.urllib.request.urlopen", opener),
-        ):
+        with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", opener):
             with pytest.raises(RuntimeError) as caught:
                 auth.refresh_token()
         assert not isinstance(caught.value, auth.RefreshNetworkError)
 
     def test_refresh_network_error_raises(self):
+        _write(_tokens(expires_at=_NOW - 1))
         opener = Mock(side_effect=urllib.error.URLError("boom"))
-        with (
-            _frozen_time(),
-            patch.object(auth, "_cached_tokens", _tokens(expires_at=_NOW - 1)),
-            patch.object(auth, "_cached_creds", dict(_CREDS)),
-            patch("withings_mcp.auth.urllib.request.urlopen", opener),
-        ):
+        with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", opener):
             with pytest.raises(auth.RefreshNetworkError):
                 auth.refresh_token()
+
+
+def _write(tokens=None, creds=_CREDS):
+    """Write the credential files at the paths `_isolate_auth` points `auth` at."""
+    if tokens is not None:
+        _refuse_unless_isolated(auth.WITHINGS_TOKENS_PATH)
+        auth.WITHINGS_TOKENS_PATH.write_text(json.dumps(tokens))
+    if creds is not None:
+        _refuse_unless_isolated(auth.WITHINGS_CLIENT_PATH)
+        auth.WITHINGS_CLIENT_PATH.write_text(json.dumps(creds))
+
+
+def test_the_credential_writer_refuses_outside_the_isolated_directory(monkeypatch):
+    """The guard is what stands between a slipped patch and the live files.
+    A sibling of the isolated directory catches a check made against anything
+    wider."""
+    with pytest.raises(pytest.fail.Exception, match="refusing to write"):
+        _refuse_unless_isolated(_ISOLATED["root"].parent / "elsewhere" / "withings_tokens.json")
+    monkeypatch.setitem(_ISOLATED, "root", None)
+    with pytest.raises(pytest.fail.Exception, match="refusing to write"):
+        _refuse_unless_isolated(auth.WITHINGS_TOKENS_PATH)
+
+
+def _stored():
+    return json.loads(auth.WITHINGS_TOKENS_PATH.read_text())
+
+
+class TestTheTokenFileIsTheOnlyCopy:
+    """`withings-mcp auth` runs in another process while the server runs.
+
+    Each test writes real files at the paths `_isolate_auth` patches, because
+    the property is about what is on disk, not about anything the module holds.
+    Withings rotates the refresh token on every refresh, so a refreshed token
+    left unsaved is a grant lost.
+    """
+
+    _REFRESHED = {"access_token": "tok-new", "refresh_token": "ref-new", "expires_in": 10800}
+
+    @staticmethod
+    def _rewrite_unnoticeably(path, text):
+        """Same length and mtime as before, so only the content says it changed.
+
+        A cache keyed on size or modification time would serve the old copy;
+        mtime resolution is coarse on some filesystems, so it can miss a real
+        rewrite.
+        """
+        before = path.stat()
+        assert len(path.read_text()) == len(text)
+        _refuse_unless_isolated(path)
+        path.write_text(text)
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+
+    @staticmethod
+    def _urlopen_writing(then, tokens=None, delete=False):
+        """An urlopen that changes the token file mid-request, then answers."""
+        answer = _urlopen_returning(then) if isinstance(then, dict) else None
+
+        def urlopen(request, timeout=None):
+            if delete:
+                _refuse_unless_isolated(auth.WITHINGS_TOKENS_PATH)
+                auth.WITHINGS_TOKENS_PATH.unlink()
+            else:
+                _write(tokens, creds=None)
+            if answer is None:
+                raise then
+            return answer(request, timeout=timeout)
+
+        return urlopen
+
+    def test_a_token_written_by_auth_is_used_without_a_restart(self):
+        """Held in memory, the old token stays in use after `auth` until a restart."""
+        _write(_tokens(access="tok-aaaa"))
+        with _frozen_time():
+            assert auth.refresh_token() == "tok-aaaa"
+            self._rewrite_unnoticeably(
+                auth.WITHINGS_TOKENS_PATH,
+                auth.WITHINGS_TOKENS_PATH.read_text().replace("tok-aaaa", "tok-bbbb"),
+            )
+            assert auth.refresh_token() == "tok-bbbb"
+
+    def test_a_new_client_file_is_used_without_a_restart(self):
+        """`auth` replaces the client file too, when reuse is declined."""
+        _write(_tokens(expires_at=_NOW - 1))
+        sent = []
+
+        def urlopen(request, timeout=None):
+            sent.append(parse_qs(request.data.decode())["client_id"][0])
+            return _urlopen_returning({"status": 0, "body": self._REFRESHED})()
+
+        with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", urlopen):
+            auth.refresh_token()
+            self._rewrite_unnoticeably(
+                auth.WITHINGS_CLIENT_PATH,
+                auth.WITHINGS_CLIENT_PATH.read_text().replace("client-xyz", "client-abc"),
+            )
+            _write(_tokens(expires_at=_NOW - 1), creds=None)
+            auth.refresh_token()
+        assert sent == ["client-xyz", "client-abc"]
+
+    def test_a_refresh_does_not_overwrite_a_grant_saved_while_it_ran(self):
+        """Saving over it loses the user's new grant.
+
+        The competing grant expires before the refreshed one would, as one
+        issued moments earlier does, so a comparison against the refreshed
+        expiry instead of the starting one fails here.
+        """
+        _write(_tokens(expires_at=_NOW - 1))
+        urlopen = self._urlopen_writing(
+            {"status": 0, "body": self._REFRESHED},
+            _tokens(access="tok-auth", refresh="ref-auth", expires_at=_NOW + 5000),
+        )
+        with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", urlopen):
+            assert auth.refresh_token() == "tok-auth"
+        assert (_stored()["access_token"], _stored()["refresh_token"]) == ("tok-auth", "ref-auth")
+
+    def test_a_refresh_saves_over_an_older_copy(self):
+        """The refresh token just issued is the only live one, since Withings
+        rotates it; an older copy holds one that no longer works."""
+        _write(_tokens(expires_at=_NOW - 1))
+        urlopen = self._urlopen_writing(
+            {"status": 0, "body": self._REFRESHED},
+            _tokens(access="tok-restored", refresh="ref-restored", expires_at=_NOW - 100),
+        )
+        with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", urlopen):
+            assert auth.refresh_token() == "tok-new"
+        assert _stored()["refresh_token"] == "ref-new"
+
+    def test_a_refresh_saves_over_a_later_copy_whose_token_has_expired(self):
+        """Later is not enough: yielding to an expired copy returns a token
+        that is refused, and drops the rotated refresh token."""
+        _write(_tokens(expires_at=_NOW - 1000))
+        urlopen = self._urlopen_writing(
+            {"status": 0, "body": self._REFRESHED},
+            _tokens(access="tok-stale", refresh="ref-stale", expires_at=_NOW - 500),
+        )
+        with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", urlopen):
+            assert auth.refresh_token() == "tok-new"
+        assert _stored()["refresh_token"] == "ref-new"
+
+    def test_a_refresh_saves_when_the_file_has_gone(self):
+        """Writes are atomic, so an unreadable file is gone or corrupt rather
+        than half-written, and the rotated refresh token must still land."""
+        _write(_tokens(expires_at=_NOW - 1))
+        urlopen = self._urlopen_writing({"status": 0, "body": self._REFRESHED}, delete=True)
+        with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", urlopen):
+            assert auth.refresh_token() == "tok-new"
+        assert _stored()["refresh_token"] == "ref-new"
+
+    @pytest.mark.parametrize(
+        "refusal",
+        [
+            urllib.error.HTTPError("https://example.invalid", 400, "no", {}, None),
+            urllib.error.HTTPError("https://example.invalid", 401, "no", {}, None),
+            {"status": 401},
+            {"status": 342},
+        ],
+        ids=["http-400", "http-401", "status-401", "status-342"],
+    )
+    def test_a_refusal_after_the_file_was_replaced_uses_the_new_file(self, refusal):
+        """The refusal judged a refresh token `auth` had already replaced.
+        Reporting it as a refusal tells the user to re-authorise over a working
+        grant."""
+        _write(_tokens(expires_at=_NOW - 1))
+        urlopen = self._urlopen_writing(
+            refusal, _tokens(access="tok-auth", refresh="ref-auth", expires_at=_NOW + 5000)
+        )
+        with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", urlopen):
+            assert auth.refresh_token() == "tok-auth"
+
+    @pytest.mark.parametrize(
+        "copy_expires_at",
+        [_NOW - 100, _NOW + 100, _NOW + 5000],
+        ids=["older", "later-inside-the-buffer", "usable"],
+    )
+    def test_a_refusal_with_the_same_refresh_token_in_the_file_is_a_refusal(self, copy_expires_at):
+        """The file changed in other fields, but still holds the refresh token
+        that was refused, so the refusal is a verdict on it, even where its
+        access token is still valid."""
+        _write(_tokens(expires_at=_NOW - 1))
+        urlopen = self._urlopen_writing(
+            {"status": 401}, _tokens(access="tok-copy", expires_at=copy_expires_at)
+        )
+        with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", urlopen):
+            with pytest.raises(auth.TokenRefused):
+                auth.refresh_token()
+
+    @pytest.mark.parametrize(
+        "copy_expires_at", [_NOW - 100, _NOW + 100], ids=["older", "later-inside-the-buffer"]
+    )
+    def test_a_refusal_after_the_file_changed_to_an_unusable_grant_is_not_a_refusal(
+        self, copy_expires_at
+    ):
+        """The refusal judged the refresh token sent, not the one now in the
+        file, so the next call refreshes with that one rather than this call
+        telling the user to re-authorise."""
+        _write(_tokens(expires_at=_NOW - 1))
+        urlopen = self._urlopen_writing(
+            {"status": 401},
+            _tokens(access="tok-copy", refresh="ref-copy", expires_at=copy_expires_at),
+        )
+        with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", urlopen):
+            with pytest.raises(auth.RefreshNetworkError):
+                auth.refresh_token()
+
+    def test_a_refusal_while_the_file_has_gone_is_not_a_refusal(self):
+        """The refusal judged the refresh token sent; with no file to compare,
+        the next call is what says whether the credentials are gone."""
+        _write(_tokens(expires_at=_NOW - 1))
+        urlopen = self._urlopen_writing({"status": 401}, delete=True)
+        with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", urlopen):
+            with pytest.raises(auth.RefreshNetworkError):
+                auth.refresh_token()
+
+    def test_a_refresh_saves_when_the_clock_steps_back_during_it(self):
+        """The file is untouched and its token still looks valid by the stepped
+        clock; only the later-expiry test tells it from a grant someone saved,
+        and yielding to it leaves the file on a refresh token Withings has
+        retired."""
+        clock = {"now": _NOW}
+        _write(_tokens(expires_at=_NOW + 200))
+
+        def urlopen(request, timeout=None):
+            clock["now"] = _NOW - 1000
+            return _urlopen_returning({"status": 0, "body": self._REFRESHED})()
+
+        with (
+            patch.object(auth.time, "time", lambda: clock["now"]),
+            patch("withings_mcp.auth.urllib.request.urlopen", urlopen),
+        ):
+            assert auth.refresh_token() == "tok-new"
+        assert _stored()["refresh_token"] == "ref-new"
+
+    @staticmethod
+    def _fail_saves(times):
+        """A `_save_json` that raises OSError for its first `times` calls."""
+        real = auth._save_json
+        calls = {"n": 0}
+
+        def save(path, data):
+            calls["n"] += 1
+            if calls["n"] <= times:
+                raise OSError(28, "No space left on device")
+            real(path, data)
+
+        return patch.object(auth, "_save_json", save)
+
+    def test_a_grant_whose_save_failed_is_kept_and_saved_later(self):
+        """Withings has already rotated the refresh token in the file, so the
+        refreshed grant is the only live copy until a save succeeds."""
+        _write(_tokens(expires_at=_NOW - 1))
+        opener = _urlopen_returning({"status": 0, "body": self._REFRESHED})
+        with (
+            _frozen_time(),
+            self._fail_saves(1),
+            patch("withings_mcp.auth.urllib.request.urlopen", opener),
+        ):
+            assert auth.refresh_token() == "tok-new"
+            assert _stored()["refresh_token"] == "ref-old"
+            assert auth.refresh_token() == "tok-new"
+        opener.assert_called_once()
+        assert _stored()["refresh_token"] == "ref-new"
+        assert auth._unsaved is None
+
+    def test_a_held_grant_is_used_while_the_file_has_gone(self):
+        """Nothing newer can be seen, and the held grant is the only live copy:
+        dropping it leaves nothing to refresh from."""
+        _write(_tokens(expires_at=_NOW - 1))
+        opener = _urlopen_returning({"status": 0, "body": self._REFRESHED})
+        with (
+            _frozen_time(),
+            self._fail_saves(1),
+            patch("withings_mcp.auth.urllib.request.urlopen", opener),
+        ):
+            auth.refresh_token()
+            _refuse_unless_isolated(auth.WITHINGS_TOKENS_PATH)
+            auth.WITHINGS_TOKENS_PATH.unlink()
+            assert auth.refresh_token() == "tok-new"
+        opener.assert_called_once()
+        assert _stored()["refresh_token"] == "ref-new"
+
+    def test_a_held_grant_is_keyed_to_the_file_as_it_was_when_the_save_failed(self):
+        """The file can change during the request. Keyed to the token the call
+        started from, the held grant is dropped on the next call though it is
+        the only live copy."""
+        _write(_tokens(expires_at=_NOW - 1))
+        urlopen = Mock(
+            side_effect=self._urlopen_writing(
+                {"status": 0, "body": self._REFRESHED},
+                _tokens(access="tok-copy", refresh="ref-copy", expires_at=_NOW - 100),
+            )
+        )
+        with (
+            _frozen_time(),
+            self._fail_saves(1),
+            patch("withings_mcp.auth.urllib.request.urlopen", urlopen),
+        ):
+            auth.refresh_token()
+            assert auth.refresh_token() == "tok-new"
+        # The held grant answered the second call; a dropped one would have
+        # been refreshed again from the copy.
+        assert urlopen.call_count == 1
+        assert _stored()["refresh_token"] == "ref-new"
+
+    def test_a_refused_held_grant_with_the_file_gone_is_a_refusal(self):
+        _write(_tokens(expires_at=_NOW - 1))
+        answers = [
+            {"status": 0, "body": dict(self._REFRESHED, expires_in=0)},
+            {"status": 401},
+        ]
+
+        def urlopen(request, timeout=None):
+            return _urlopen_returning(answers.pop(0))()
+
+        with (
+            _frozen_time(),
+            self._fail_saves(9),
+            patch("withings_mcp.auth.urllib.request.urlopen", urlopen),
+        ):
+            auth.refresh_token()
+            _refuse_unless_isolated(auth.WITHINGS_TOKENS_PATH)
+            auth.WITHINGS_TOKENS_PATH.unlink()
+            with pytest.raises(auth.TokenRefused):
+                auth.refresh_token()
+        assert auth._unsaved is None
+
+    def test_a_held_grant_that_expires_is_refreshed_with_its_own_refresh_token(self):
+        """The file's refresh token is the one the held grant replaced, and
+        Withings has retired it; sending it is refused, and reads as the file
+        unchanged, so the user is told to re-authorise over a live grant."""
+        _write(_tokens(expires_at=_NOW - 1))
+        sent = []
+        answers = [
+            dict(self._REFRESHED, expires_in=0),
+            dict(self._REFRESHED, access_token="tok-long", refresh_token="ref-long"),
+        ]
+
+        def urlopen(request, timeout=None):
+            sent.append(parse_qs(request.data.decode())["refresh_token"][0])
+            return _urlopen_returning({"status": 0, "body": answers.pop(0)})()
+
+        # Two failures, so the retry before the second refresh fails too and
+        # the file still holds ref-old when it runs.
+        with (
+            _frozen_time(),
+            self._fail_saves(2),
+            patch("withings_mcp.auth.urllib.request.urlopen", urlopen),
+        ):
+            auth.refresh_token()
+            assert auth.refresh_token() == "tok-long"
+        assert sent == ["ref-old", "ref-new"]
+
+    def test_a_later_grant_that_wins_also_ends_a_held_one(self):
+        """Left held, a later moment with the file gone saves the held grant,
+        whose refresh token this refresh has just spent."""
+        _write(_tokens(expires_at=_NOW - 1))
+        posts = []
+
+        def urlopen(request, timeout=None):
+            posts.append(request)
+            if len(posts) == 1:
+                body = dict(self._REFRESHED, expires_in=0)
+            else:
+                _write(_tokens(access="tok-auth", refresh="ref-auth", expires_at=_NOW + 5000))
+                body = self._REFRESHED
+            return _urlopen_returning({"status": 0, "body": body})()
+
+        # Two failures: the first refresh's save, and the retry before the
+        # second, so the grant is still held when the second refresh runs.
+        with (
+            _frozen_time(),
+            self._fail_saves(2),
+            patch("withings_mcp.auth.urllib.request.urlopen", urlopen),
+        ):
+            auth.refresh_token()
+            assert auth.refresh_token() == "tok-auth"
+        assert len(posts) == 2
+        assert auth._unsaved is None
+
+    def test_a_held_grant_gives_way_to_a_file_written_since(self):
+        _write(_tokens(expires_at=_NOW - 1))
+        opener = _urlopen_returning({"status": 0, "body": self._REFRESHED})
+        with (
+            _frozen_time(),
+            self._fail_saves(1),
+            patch("withings_mcp.auth.urllib.request.urlopen", opener),
+        ):
+            auth.refresh_token()
+            _write(_tokens(access="tok-auth", refresh="ref-auth", expires_at=_NOW + 5000))
+            assert auth.refresh_token() == "tok-auth"
+        assert auth._unsaved is None
+
+    def test_a_refused_held_grant_is_a_refusal(self):
+        """Otherwise the held grant's refusal reads as a change to the file,
+        which still holds the token it replaced, and never converges."""
+        _write(_tokens(expires_at=_NOW - 1))
+        answers = [
+            {"status": 0, "body": dict(self._REFRESHED, expires_in=0)},
+            {"status": 401},
+        ]
+
+        def urlopen(request, timeout=None):
+            return _urlopen_returning(answers.pop(0))()
+
+        with (
+            _frozen_time(),
+            self._fail_saves(9),
+            patch("withings_mcp.auth.urllib.request.urlopen", urlopen),
+        ):
+            auth.refresh_token()
+            with pytest.raises(auth.TokenRefused):
+                auth.refresh_token()
+        assert auth._unsaved is None
+
+    def test_concurrent_calls_refresh_once(self):
+        """Tool calls run in worker threads. Unserialised, two spend the same
+        refresh token, and Withings rotates it on use."""
+        import threading
+
+        _write(_tokens(expires_at=_NOW - 1))
+        posts = []
+        second = {}
+
+        def call_from_another_thread():
+            second["token"] = auth.refresh_token()
+
+        other = threading.Thread(target=call_from_another_thread)
+
+        def urlopen(request, timeout=None):
+            posts.append(request)
+            if len(posts) == 1:
+                other.start()
+                # Long enough for an unserialised second call to reach the
+                # network; with the lock it is still waiting when this returns.
+                other.join(timeout=0.5)
+            body = dict(self._REFRESHED, access_token=f"tok-{len(posts)}")
+            return _urlopen_returning({"status": 0, "body": body})()
+
+        with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", urlopen):
+            first = auth.refresh_token()
+            other.join(timeout=5)
+
+        assert len(posts) == 1
+        assert second["token"] == first
 
 
 class TestExchangeCode:

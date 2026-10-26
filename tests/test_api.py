@@ -197,13 +197,9 @@ class TestAgainstTheRealRefresh(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.dir = Path(self._tmp.name)
-        auth._cached_tokens = None
-        auth._cached_creds = None
 
     def tearDown(self):
         self._tmp.cleanup()
-        auth._cached_tokens = None
-        auth._cached_creds = None
 
     def _post_with_token_file(self, contents):
         tokens = self.dir / "withings_tokens.json"
@@ -216,6 +212,23 @@ class TestAgainstTheRealRefresh(unittest.TestCase):
             patch.object(auth, "WITHINGS_CLIENT_PATH", client),
         ):
             return api.post("https://example.invalid/measure", {})
+
+    def test_a_rejected_token_is_retried_with_the_token_file_as_it_is_now(self):
+        """A 401 on a data request is answered by reading the file again, so a
+        token `withings-mcp auth` saved in the meantime is the one retried."""
+        tokens = self.dir / "withings_tokens.json"
+        sent = []
+
+        def urlopen(request, timeout=None):
+            sent.append(request.get_header("Authorization"))
+            if len(sent) == 1:
+                tokens.write_text('{"access_token": "tok-new", "expires_at": 9999999999}')
+                return _mock_urlopen({"status": 401})
+            return _mock_urlopen({"status": 0, "body": {}})
+
+        with patch.object(api.urllib.request, "urlopen", urlopen):
+            self._post_with_token_file('{"access_token": "tok-old", "expires_at": 9999999999}')
+        self.assertEqual(sent, ["Bearer tok-old", "Bearer tok-new"])
 
     def test_a_missing_token_file(self):
         with self.assertRaises(api.WithingsAuthError):
@@ -339,8 +352,6 @@ class TestAgainstTheRealRefresh(unittest.TestCase):
                     (self.dir / "withings_client.json").write_text(
                         '{"client_id": "i", "client_secret": "s"}'
                     )
-                    auth._cached_tokens = None
-                    auth._cached_creds = None
                     auth.refresh_token()
         self.assertNotIsInstance(caught.exception, auth.RefreshNetworkError)
         self.assertIn("Token refresh failed", str(caught.exception))

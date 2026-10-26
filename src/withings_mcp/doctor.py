@@ -275,12 +275,13 @@ def _check_token_file() -> list[Finding]:
 
 
 def _check_token_file_writability(path: Path) -> list[Finding]:
-    """A refresh that cannot be saved loses the token it was given.
+    """A refresh that cannot be saved leaves its token only in memory.
 
     A refresh may return a replacement refresh token - auth.py stores whichever
     it gets and falls back to the existing one when the response carries none.
-    If the save fails, the replacement is lost while the token it replaced may
-    already be spent, and every later call refreshes again.
+    If the save fails, the token it replaced may already be spent: a running
+    server holds the replacement in memory and retries the save on each call,
+    and loses it when it restarts.
 
     What the save needs is the DIRECTORY, not the file: auth.py creates a temp
     file beside the target and renames it over, so it needs write and execute
@@ -300,12 +301,14 @@ def _check_token_file_writability(path: Path) -> list[Finding]:
             "refreshed token cannot be saved. The save writes a new file in this "
             "directory and renames it over the old one, which needs both write and "
             "execute (search) permission on the directory - either one missing is "
-            "enough. Every call will refresh again, and if the refresh returns a "
-            "replacement refresh token it is lost while the one it replaced may "
-            "already be spent. Until this process restarts it keeps using the token "
-            "it holds in memory, so the failure may not show immediately.",
+            "enough. A refresh returns a replacement refresh token and the one it "
+            "replaced may already be spent. A running server keeps the replacement "
+            "in memory and retries the save on each call, and loses it when it "
+            "restarts. Until a save succeeds, any other process using this file "
+            "sends the spent token and is refused.",
             "Give the directory both write and execute permission for this user "
-            "before the next sync runs.",
+            "before the next sync runs. Fix the permissions rather than "
+            "re-authorising, which needs the same save.",
         )
     ]
 

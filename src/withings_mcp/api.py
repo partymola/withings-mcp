@@ -35,7 +35,7 @@ def post(url: str, params: dict, retries: int = 2) -> dict:
     Handles:
     - Automatic token refresh before each call (5-min buffer)
     - Status-in-body error detection (HTTP always returns 200)
-    - 401: refresh token and retry once
+    - 401: retry, which reads the token file again
     - 601/602: raise WithingsRateLimitError with recovery guidance
     - Other non-zero status: raise WithingsAPIError
 
@@ -108,11 +108,9 @@ def post(url: str, params: dict, retries: int = 2) -> dict:
             return payload
 
         if status == 401:
-            # Token expired - force refresh and retry
-            logger.info("Token expired (401), refreshing")
-            from . import auth
-
-            auth._cached_tokens = None
+            # The retry reads the token file again, which picks up a token
+            # another process saved since this one was read.
+            logger.info("Token rejected (401), retrying with the token file as it is now")
             continue
 
         if status in (601, 602):

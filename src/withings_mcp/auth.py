@@ -90,9 +90,15 @@ class RefreshNetworkError(WithingsError, RuntimeError):
     """
 
 
-# In-memory token cache to avoid re-reading JSON files on every API call
-_cached_tokens = None
-_cached_creds = None
+# Tool calls run in worker threads. Without this, two can spend the same
+# refresh token, which Withings rotates on use.
+_token_lock = threading.Lock()
+
+# A refreshed grant whose save failed: (the refresh token the file held when
+# the save failed, the grant). Withings rotates the refresh token, so the
+# file's may already be spent and this the only live copy. It is used only
+# while the file still holds that token or cannot be read.
+_unsaved = None
 
 
 def _save_json(path, data):
@@ -185,38 +191,130 @@ def _exchange_code(code, client_id, client_secret):
     return payload, None
 
 
+def _expires_at(tokens):
+    """The stored expiry, or 0 when it is unusable.
+
+    A non-numeric expiry - hand-edited, or half-repaired - counts as expired
+    rather than raising on the comparison, so a refresh decides.
+    """
+    value = tokens.get("expires_at", 0)
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return 0
+    return value
+
+
+def _usable(tokens):
+    """Whether the stored access token can be sent, with the 5-minute buffer."""
+    return bool(tokens.get("access_token")) and time.time() < _expires_at(tokens) - 300
+
+
+def _reread_tokens():
+    """The token file as it is now, or None if it cannot be read."""
+    try:
+        return _load_json(WITHINGS_TOKENS_PATH)
+    except TokenRefused:
+        return None
+
+
+def _replaced_by_a_later_grant(on_disk, tokens):
+    """Whether `on_disk` is a grant saved since `tokens` was read, and usable.
+
+    Usable is what decides; later guards a clock that steps back during the
+    request, which would otherwise make the untouched file look new. Withings
+    rotates the refresh token, so the one just issued is known to be live and
+    another copy's usually is not: saving over that copy is what keeps it.
+    """
+    return _expires_at(on_disk) > _expires_at(tokens) and _usable(on_disk)
+
+
+def _current_tokens():
+    """The token file, or the grant held after a failed save while it still applies."""
+    global _unsaved
+    if _unsaved is not None:
+        file_token, held = _unsaved
+        on_disk = _reread_tokens()
+        if on_disk is None or on_disk.get("refresh_token") == file_token:
+            _save(held, file_token)
+            return held
+        _unsaved = None
+    return _load_json(WITHINGS_TOKENS_PATH)
+
+
+def _save(refreshed, file_token):
+    """Save a refreshed grant, or hold it if the save fails.
+
+    `file_token` is the refresh token the file holds, which is what a held
+    grant is matched against on the next call.
+    """
+    global _unsaved
+    try:
+        _save_json(WITHINGS_TOKENS_PATH, refreshed)
+    except OSError:
+        logger.warning("Could not save the refreshed token; holding it until a save succeeds")
+        _unsaved = (file_token, refreshed)
+    else:
+        _unsaved = None
+
+
+def _answer_refusal(tokens, file_token, cause, detail):
+    """Return a token from a file replaced during the request, or raise.
+
+    A refusal judges the refresh token sent and nothing else. A file holding a
+    different one was replaced by `auth` or a concurrent refresh: its token is
+    used if valid, and otherwise the next call refreshes from it.
+    """
+    global _unsaved
+    on_disk = _reread_tokens()
+    if on_disk is None and _unsaved is not None:
+        # The held grant was refused, and the missing file is taken to hold
+        # nothing newer.
+        _unsaved = None
+        logger.error("Token refresh refused with %s", detail)
+        raise TokenRefused("Token refresh failed. Run: withings-mcp auth") from cause
+    if on_disk is None:
+        logger.warning("Token refresh refused while the token file was unreadable")
+        raise RefreshNetworkError("The token file could not be read.") from cause
+    _unsaved = None
+    if on_disk.get("refresh_token") not in (tokens.get("refresh_token"), file_token):
+        if _usable(on_disk):
+            logger.warning("Token refresh refused, but a later grant was saved meanwhile")
+            return on_disk["access_token"]
+        logger.warning("Token refresh refused while the token file was changing")
+        raise RefreshNetworkError("The token file changed during the refresh.") from cause
+    logger.error("Token refresh refused with %s", detail)
+    raise TokenRefused("Token refresh failed. Run: withings-mcp auth") from cause
+
+
 def _refresh_token() -> str:
     """Return a valid access token, refreshing if expired.
 
     Checks expiry with a 5-minute buffer. If expired, uses the refresh_token
-    grant to obtain new tokens and updates the token file.
+    grant and saves the result, unless a later grant was saved meanwhile.
+
+    The token file is read on every call and the client file on every refresh,
+    and nothing is kept between calls: `withings-mcp auth` replaces them from
+    another process while the server runs. The one exception is a grant whose
+    save failed, held by `_current_tokens` while the file still holds the
+    token it replaced.
     """
-    global _cached_tokens, _cached_creds
+    global _unsaved
+    tokens = _current_tokens()
+    file_token = _unsaved[0] if _unsaved is not None else tokens.get("refresh_token")
+    if _usable(tokens):
+        return tokens["access_token"]
 
-    if _cached_tokens is None:
-        _cached_tokens = _load_json(WITHINGS_TOKENS_PATH)
-    if _cached_creds is None:
-        _cached_creds = _load_json(WITHINGS_CLIENT_PATH)
-
-    # A non-numeric expiry - hand-edited, or half-repaired - counts as expired
-    # rather than raising on the comparison, so the refresh below decides.
-    expires_at = _cached_tokens.get("expires_at", 0)
-    if not isinstance(expires_at, (int, float)):
-        expires_at = 0
-    if time.time() < expires_at - 300:
-        return _cached_tokens["access_token"]
-
-    if not _cached_tokens.get("refresh_token"):
+    if not tokens.get("refresh_token"):
         logger.error("Token expired and no refresh token. Run: withings-mcp auth")
         raise TokenRefused("Token expired and no refresh token. Run: withings-mcp auth")
 
+    creds = _load_json(WITHINGS_CLIENT_PATH)
     data = urlencode(
         {
             "action": "requesttoken",
             "grant_type": "refresh_token",
-            "client_id": _cached_creds["client_id"],
-            "client_secret": _cached_creds["client_secret"],
-            "refresh_token": _cached_tokens["refresh_token"],
+            "client_id": creds["client_id"],
+            "client_secret": creds["client_secret"],
+            "refresh_token": tokens["refresh_token"],
         }
     ).encode()
 
@@ -232,8 +330,7 @@ def _refresh_token() -> str:
         # no judgement at all. Answering a rate limit with "re-authorise" turns
         # a condition that clears itself into a rotated token file.
         if e.code in _REFUSAL_CODES:
-            logger.error("Token refresh refused with HTTP %s", e.code)
-            raise TokenRefused("Token refresh failed. Run: withings-mcp auth") from e
+            return _answer_refusal(tokens, file_token, e, f"HTTP {e.code}")
         logger.error("Token refresh got HTTP %s from the server", e.code)
         raise RefreshNetworkError("Withings could not answer the refresh request.") from e
     except (OSError, http.client.HTTPException, UnicodeDecodeError) as e:
@@ -264,8 +361,7 @@ def _refresh_token() -> str:
     status = body.get("status")
     if status != 0:
         if status in _REFUSAL_STATUSES:
-            logger.error("Token refresh refused with status %s", status)
-            raise TokenRefused("Token refresh failed. Run: withings-mcp auth")
+            return _answer_refusal(tokens, file_token, None, f"status {status}")
         logger.error("Token refresh returned status %s", status)
         raise RefreshNetworkError("Withings could not complete the refresh.")
 
@@ -273,14 +369,27 @@ def _refresh_token() -> str:
     if not isinstance(new_tokens, dict):
         logger.error("Token refresh returned no token payload")
         raise TokenRefused("Token refresh failed. Run: withings-mcp auth")
-    _cached_tokens = {
+    refreshed = {
         "access_token": new_tokens["access_token"],
-        "refresh_token": new_tokens.get("refresh_token", _cached_tokens["refresh_token"]),
-        "userid": new_tokens.get("userid", _cached_tokens.get("userid")),
+        "refresh_token": new_tokens.get("refresh_token", tokens["refresh_token"]),
+        "userid": new_tokens.get("userid", tokens.get("userid")),
         "expires_at": time.time() + new_tokens.get("expires_in", 10800),
     }
-    _save_json(WITHINGS_TOKENS_PATH, _cached_tokens)
-    return _cached_tokens["access_token"]
+
+    # A grant `auth` saved during the request is newer than this one, so it
+    # wins. Anything else is saved over: this package's writes replace the
+    # file atomically, so an unreadable one is gone or corrupt rather than
+    # half-written by it.
+    on_disk = _reread_tokens()
+    if on_disk is not None and _replaced_by_a_later_grant(on_disk, tokens):
+        logger.warning("A later grant was saved during the refresh; using it instead")
+        _unsaved = None
+        return on_disk["access_token"]
+
+    # Keyed to what the file holds now, which may have changed during the
+    # request: that is what the next call compares against.
+    _save(refreshed, on_disk.get("refresh_token") if on_disk is not None else file_token)
+    return refreshed["access_token"]
 
 
 def refresh_token() -> str:
@@ -299,7 +408,8 @@ def refresh_token() -> str:
     visible, and it does not tell anyone to rotate a shared token file.
     """
     try:
-        return _refresh_token()
+        with _token_lock:
+            return _refresh_token()
     except (TokenRefused, RefreshNetworkError):
         raise
     except Exception as e:
@@ -331,10 +441,10 @@ def setup_auth():
             # through to the prompts rather than reading from the empty result.
             print(f"{WITHINGS_CLIENT_PATH} is unreadable; setting up from scratch.")
 
-    def _usable(value):
+    def _filled(value):
         return isinstance(value, str) and value
 
-    if creds and not (_usable(creds.get("client_id")) and _usable(creds.get("client_secret"))):
+    if creds and not (_filled(creds.get("client_id")) and _filled(creds.get("client_secret"))):
         print(f"{WITHINGS_CLIENT_PATH} is incomplete; setting up from scratch.")
         creds = None
 
