@@ -4,6 +4,7 @@ Withings auth codes expire in 30 seconds, so the code exchange MUST happen
 inside the HTTP callback handler, not after server shutdown.
 """
 
+import contextlib
 import html
 import http.client
 import json
@@ -19,6 +20,7 @@ import urllib.error
 import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 
 from .config import (
@@ -104,26 +106,49 @@ _unsaved = None
 def _save_json(path, data):
     """Replace the file in one step, and never leave it readable in between.
 
-    `os.replace` is atomic within a directory, so a reader sees either the
-    old file or the new one - a property of the filesystem, not of whatever
-    syncs the directory to another host. mkstemp rather than a named sibling
+    Written to a new file beside it, synced, and renamed over it: `os.replace`
+    is atomic within a directory on POSIX, so a reader sees either the old
+    file or the new one - a property of the filesystem, not of whatever syncs
+    the directory to another host. mkstemp rather than a named sibling
     because it creates the file 0600 before anything is written and its name
     is unique, so concurrent writers cannot interleave through a shared path.
-    A kill between the write and the rename can still leave a temp file, at
-    0600.
-
-    The 0600 applies on POSIX; Windows ignores the mode and governs access by
-    inherited ACLs. The atomic replace holds on both.
+    A symlink is followed, so the file it points at is the one replaced. A
+    kill between the write and the rename can still leave a temp file, at
+    0600. Windows ignores the mode and governs access by inherited ACLs.
     """
+    path = Path(os.path.realpath(path))
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
     try:
         with os.fdopen(fd, "w") as handle:
             handle.write(json.dumps(data, indent=2))
-        os.replace(tmp, path)
+            handle.flush()
+            os.fsync(handle.fileno())
+        _replace(tmp, path)
     except BaseException:
-        os.unlink(tmp)
+        # Whatever stops the cleanup, the error to report is the one above.
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
         raise
+
+
+# Windows refuses to replace a file another process has open, and every
+# server sharing the token file opens it on each request. Each read is brief,
+# so a short wait clears it; anywhere else the refusal is a real permission
+# fault and is raised at once.
+_REPLACE_ATTEMPTS = 5
+_REPLACE_BACKOFF_SECONDS = 0.05
+
+
+def _replace(src, dst):
+    for attempt in range(1, _REPLACE_ATTEMPTS + 1):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if sys.platform != "win32" or attempt == _REPLACE_ATTEMPTS:
+                raise
+            time.sleep(_REPLACE_BACKOFF_SECONDS * attempt)
 
 
 def _load_json(path):
@@ -131,7 +156,7 @@ def _load_json(path):
 
     Classified here rather than left to the caller: a file that is absent,
     unreadable or not a JSON object means there are no usable credentials, and
-    re-authorising is the remedy. _save_json writes atomically, so a reader
+    re-authorising is the remedy. _save_json replaces the file in one step, so a reader
     cannot see a half-written file and mistake it for a malformed one.
     """
     try:
@@ -250,7 +275,9 @@ def _save(refreshed, file_token):
     try:
         _save_json(WITHINGS_TOKENS_PATH, refreshed)
     except OSError:
-        logger.warning("Could not save the refreshed token; holding it until a save succeeds")
+        # Once, when the grant starts being held: the retry runs on every call.
+        if _unsaved is None:
+            logger.warning("Could not save the refreshed token; holding it until a save succeeds")
         _unsaved = (file_token, refreshed)
     else:
         _unsaved = None
@@ -265,13 +292,10 @@ def _answer_refusal(tokens, file_token, cause, detail):
     """
     global _unsaved
     on_disk = _reread_tokens()
-    if on_disk is None and _unsaved is not None:
-        # The held grant was refused, and the missing file is taken to hold
-        # nothing newer.
-        _unsaved = None
-        logger.error("Token refresh refused with %s", detail)
-        raise TokenRefused("Token refresh failed. Run: withings-mcp auth") from cause
     if on_disk is None:
+        # Nothing to compare the refusal with. A held grant was the token
+        # refused, so it goes, and the next call's read of the file decides.
+        _unsaved = None
         logger.warning("Token refresh refused while the token file was unreadable")
         raise RefreshNetworkError("The token file could not be read.") from cause
     _unsaved = None
@@ -378,7 +402,7 @@ def _refresh_token() -> str:
 
     # A grant `auth` saved during the request is newer than this one, so it
     # wins. Anything else is saved over: this package's writes replace the
-    # file atomically, so an unreadable one is gone or corrupt rather than
+    # file in one step, so an unreadable one is gone or corrupt rather than
     # half-written by it.
     on_disk = _reread_tokens()
     if on_disk is not None and _replaced_by_a_later_grant(on_disk, tokens):
@@ -427,6 +451,18 @@ def _callback_page(message):
     return f"<html><body><h2>{html.escape(message)}</h2></body></html>"
 
 
+def _save_or_exit(path, data, what):
+    """Save for `setup_auth`, ending in a message rather than a traceback.
+
+    The type, never the text: an OSError's message names this install's paths.
+    """
+    try:
+        _save_json(path, data)
+    except OSError as e:
+        print(f"Error: the {what} could not be saved ({type(e).__name__}).", file=sys.stderr)
+        sys.exit(1)
+
+
 def setup_auth():
     """Interactive OAuth setup. Prompts for credentials, opens browser, exchanges code."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -464,7 +500,7 @@ def setup_auth():
             print("Error: both client_id and client_secret required.", file=sys.stderr)
             sys.exit(1)
         creds = {"client_id": client_id, "client_secret": client_secret}
-        _save_json(WITHINGS_CLIENT_PATH, creds)
+        _save_or_exit(WITHINGS_CLIENT_PATH, creds, "credentials")
         print("Credentials saved.")
 
     state = secrets.token_urlsafe(32)
@@ -562,7 +598,7 @@ def setup_auth():
         "userid": tokens.get("userid"),
         "expires_at": time.time() + tokens.get("expires_in", 10800),
     }
-    _save_json(WITHINGS_TOKENS_PATH, token_store)
+    _save_or_exit(WITHINGS_TOKENS_PATH, token_store, "tokens")
     print(f"Tokens saved. User ID: {tokens.get('userid')}")
     print("\nSetup complete. Register with Claude Code:")
     command = sys.executable.replace("/bin/python", "/bin/withings-mcp")

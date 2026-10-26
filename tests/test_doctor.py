@@ -418,6 +418,24 @@ class TestCredentials:
 
     @skip_as_root
     @skip_non_posix
+    def test_a_symlinked_token_file_is_checked_where_the_save_writes(self, setup):
+        """The save follows the link, so the directory it needs is the
+        target's; checking the link's own reports the opposite of the truth."""
+        config_dir, _ = setup
+        _write_client(config_dir)
+        path = _write_tokens(config_dir)
+        target_dir = config_dir.parent / "secrets"
+        target_dir.mkdir()
+        os.replace(path, target_dir / path.name)
+        path.symlink_to(target_dir / path.name)
+        os.chmod(target_dir, 0o500)
+        try:
+            assert doctor.FAIL in _severities(doctor.check_credentials(), "credentials")
+        finally:
+            os.chmod(target_dir, 0o700)
+
+    @skip_as_root
+    @skip_non_posix
     def test_a_read_only_token_file_is_not_a_problem(self, setup):
         """os.replace needs nothing on the file, so this used to fail falsely."""
         config_dir, _ = setup

@@ -12,10 +12,13 @@ rather than the browser.
 """
 
 import json
+import logging
 import os
 import socket
 import sys
+import threading
 import urllib.error
+from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 from urllib.parse import parse_qs
 
@@ -516,14 +519,19 @@ class TestTheTokenFileIsTheOnlyCopy:
         assert urlopen.call_count == 1
         assert _stored()["refresh_token"] == "ref-new"
 
-    def test_a_refused_held_grant_with_the_file_gone_is_a_refusal(self):
+    def test_a_refused_held_grant_with_the_file_gone_is_settled_by_the_next_call(self):
+        """Gone may be another writer about to put a grant there, so the
+        refusal is not a verdict; the held grant is dead either way, and the
+        next call reads the file without sending anything."""
         _write(_tokens(expires_at=_NOW - 1))
         answers = [
             {"status": 0, "body": dict(self._REFRESHED, expires_in=0)},
             {"status": 401},
         ]
+        posts = []
 
         def urlopen(request, timeout=None):
+            posts.append(request)
             return _urlopen_returning(answers.pop(0))()
 
         with (
@@ -534,9 +542,26 @@ class TestTheTokenFileIsTheOnlyCopy:
             auth.refresh_token()
             _refuse_unless_isolated(auth.WITHINGS_TOKENS_PATH)
             auth.WITHINGS_TOKENS_PATH.unlink()
+            with pytest.raises(auth.RefreshNetworkError):
+                auth.refresh_token()
+            assert auth._unsaved is None
             with pytest.raises(auth.TokenRefused):
                 auth.refresh_token()
-        assert auth._unsaved is None
+        assert len(posts) == 2
+
+    def test_a_failed_save_is_reported_once_while_it_is_retried(self, caplog):
+        """The retry runs on every request, and a sync makes many."""
+        _write(_tokens(expires_at=_NOW - 1))
+        opener = _urlopen_returning({"status": 0, "body": self._REFRESHED})
+        with (
+            _frozen_time(),
+            self._fail_saves(9),
+            patch("withings_mcp.auth.urllib.request.urlopen", opener),
+            caplog.at_level(logging.WARNING, logger="withings_mcp.auth"),
+        ):
+            for _ in range(4):
+                auth.refresh_token()
+        assert len([r for r in caplog.records if "save" in r.getMessage()]) == 1
 
     def test_a_held_grant_that_expires_is_refreshed_with_its_own_refresh_token(self):
         """The file's refresh token is the one the held grant replaced, and
@@ -793,33 +818,74 @@ def _urlopen_returning_raw(payload):
     return Mock(return_value=cm)
 
 
+def _writes_that(action):
+    """An `os.fdopen` whose handle calls `action(fd)` before each write."""
+    real_fdopen = os.fdopen
+
+    class _Handle:
+        def __init__(self, handle):
+            self._handle = handle
+
+        def __enter__(self):
+            self._handle.__enter__()
+            return self
+
+        def __exit__(self, *exc):
+            return self._handle.__exit__(*exc)
+
+        def write(self, text):
+            action(self._handle.fileno())
+            return self._handle.write(text)
+
+        def __getattr__(self, name):
+            return getattr(self._handle, name)
+
+    return patch.object(auth.os, "fdopen", lambda fd, *a, **k: _Handle(real_fdopen(fd, *a, **k)))
+
+
 class TestTheTokenFileIsNeverExposed:
     """The refresh token must not sit in a readable file, even briefly.
 
     The mode is asserted at the moment of writing, not only on the final
     file, which is 0600 whether or not there was a readable window. Only the
-    mode-bit test is POSIX-only; the rest hold anywhere.
+    mode-bit and symlink tests are POSIX-only; the rest hold anywhere. Paths
+    are resolved because the save follows symlinks, and on macOS the temp
+    directory sits behind one.
     """
 
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits; Windows uses ACLs")
-    def test_the_file_is_never_written_at_a_readable_mode(self, tmp_path, monkeypatch):
+    def test_the_new_file_is_owner_only_before_the_token_is_written(self, tmp_path):
         seen = []
-        real_replace = os.replace
-
-        def spy(src, dst):
-            seen.append(oct(os.stat(src).st_mode & 0o777))
-            return real_replace(src, dst)
-
-        monkeypatch.setattr(auth.os, "replace", spy)
         target = tmp_path / "withings_tokens.json"
-        auth._save_json(target, {"refresh_token": "fictional"})
+        with _writes_that(lambda fd: seen.append(oct(os.fstat(fd).st_mode & 0o777))):
+            auth._save_json(target, {"refresh_token": "fictional"})
 
         assert seen == ["0o600"]
         assert oct(target.stat().st_mode & 0o777) == "0o600"
 
-    def test_nothing_is_left_behind_when_the_write_fails(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize(
+        "failure",
+        [OSError(28, "No space left on device"), KeyboardInterrupt()],
+        ids=["disk-full", "interrupted"],
+    )
+    def test_a_failed_write_leaves_the_old_file_and_nothing_else(self, tmp_path, failure):
+        """The temp file holds the new refresh token, so one left behind is a
+        live credential lying in the config directory."""
+        target = tmp_path / "withings_tokens.json"
+        target.write_text('{"refresh_token": "old"}')
+
+        def fail(fd):
+            raise failure
+
+        with _writes_that(fail), pytest.raises(type(failure)):
+            auth._save_json(target, {"refresh_token": "new"})
+
+        assert target.read_text() == '{"refresh_token": "old"}'
+        assert list(tmp_path.iterdir()) == [target]
+
+    def test_a_failed_replace_leaves_the_old_file_and_nothing_else(self, tmp_path, monkeypatch):
         def boom(src, dst):
-            raise OSError("no space left on device")
+            raise OSError(13, "Permission denied")
 
         monkeypatch.setattr(auth.os, "replace", boom)
         target = tmp_path / "withings_tokens.json"
@@ -827,6 +893,150 @@ class TestTheTokenFileIsNeverExposed:
             auth._save_json(target, {"refresh_token": "fictional"})
 
         assert list(tmp_path.iterdir()) == []
+
+    def test_a_failed_cleanup_does_not_hide_why_the_save_failed(self, tmp_path):
+        """A scanner can block the unlink as well as the replace on Windows."""
+
+        def refuse_replace(src, dst):
+            raise OSError(28, "No space left on device")
+
+        def refuse_unlink(path):
+            raise PermissionError(13, "Access is denied")
+
+        with (
+            patch.object(auth.os, "replace", refuse_replace),
+            patch.object(auth.os, "unlink", refuse_unlink),
+            pytest.raises(OSError) as raised,
+        ):
+            auth._save_json(tmp_path / "withings_tokens.json", {"refresh_token": "new"})
+        assert raised.value.errno == 28
+
+    def test_the_new_file_is_synced_before_it_replaces_the_old_one(self, tmp_path):
+        """Unsynced, a crash soon after the rename can leave an empty file on
+        some filesystems, after the refresh token it replaced was spent."""
+        data = {"refresh_token": "new"}
+        events = []
+        real_fsync, real_replace = os.fsync, os.replace
+
+        def fsync(fd):
+            # The whole file has to be in it by now, or the sync covers less.
+            events.append(("fsync", os.fstat(fd).st_size))
+            return real_fsync(fd)
+
+        def replace(src, dst):
+            events.append(("replace", None))
+            return real_replace(src, dst)
+
+        target = tmp_path / "withings_tokens.json"
+        with patch.object(auth.os, "fsync", fsync), patch.object(auth.os, "replace", replace):
+            auth._save_json(target, data)
+
+        # Against the saved file rather than the JSON: Windows writes `\r\n`.
+        assert events == [("fsync", target.stat().st_size), ("replace", None)]
+        assert target.stat().st_size > 0
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+    def test_a_symlinked_token_file_is_saved_where_the_link_points(self, tmp_path):
+        """Replacing the link would leave its target, which anything else using
+        the real path reads, on a refresh token already spent."""
+        folder = tmp_path.resolve()
+        real = folder / "secrets" / "withings_tokens.json"
+        real.parent.mkdir()
+        real.write_text('{"refresh_token": "old"}')
+        link = folder / "withings_tokens.json"
+        link.symlink_to(real)
+        published = []
+        real_replace = os.replace
+
+        def spy(src, dst):
+            published.append(Path(src).parent)
+            return real_replace(src, dst)
+
+        with patch.object(auth.os, "replace", spy):
+            auth._save_json(link, {"refresh_token": "new"})
+
+        assert link.is_symlink()
+        assert json.loads(real.read_text()) == {"refresh_token": "new"}
+        # Beside the real file, since a rename cannot cross filesystems.
+        assert published == [real.parent]
+
+    def test_windows_retries_a_replace_another_reader_is_blocking(self, tmp_path):
+        """Windows refuses to replace a file another process has open, and a
+        server sharing the file opens it on every request; `auth` cannot redo
+        the save once the authorisation code is spent."""
+        attempts = []
+        real_replace = os.replace
+
+        def busy_twice(src, dst):
+            attempts.append(src)
+            if len(attempts) <= 2:
+                raise PermissionError(13, "Access is denied")
+            return real_replace(src, dst)
+
+        target = tmp_path / "withings_tokens.json"
+        with (
+            patch.object(auth.sys, "platform", "win32"),
+            patch.object(auth.os, "replace", busy_twice),
+            patch.object(auth.time, "sleep") as sleep,
+        ):
+            auth._save_json(target, {"refresh_token": "new"})
+
+        assert len(attempts) == 3
+        assert json.loads(target.read_text()) == {"refresh_token": "new"}
+        # Back-to-back retries would be over before a reader let go.
+        delays = [call.args[0] for call in sleep.call_args_list]
+        assert len(delays) == 2 and 0 < delays[0] < delays[1], delays
+
+    @pytest.mark.parametrize("platform,expected", [("linux", 1), ("win32", 5)])
+    def test_a_refused_replace_is_not_retried_elsewhere_or_forever(
+        self, tmp_path, platform, expected
+    ):
+        """Off Windows the refusal is a real permission fault, and on Windows a
+        file that stays locked has to fail rather than hang the server."""
+        attempts = []
+
+        def refuse(src, dst):
+            attempts.append(src)
+            raise PermissionError(13, "Access is denied")
+
+        with (
+            patch.object(auth.sys, "platform", platform),
+            patch.object(auth.os, "replace", refuse),
+            patch.object(auth.time, "sleep"),
+            pytest.raises(PermissionError),
+        ):
+            auth._save_json(tmp_path / "withings_tokens.json", {"refresh_token": "new"})
+        assert len(attempts) == expected
+        assert list(tmp_path.iterdir()) == []
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="the sharing rule retried is Windows'")
+    def test_a_save_waits_out_a_reader_holding_the_file_open(self, tmp_path):
+        """The real refusal, not a stand-in for it: a reader holds the file
+        while the save runs, and lets go within the retries."""
+        refused = []
+        real_replace = os.replace
+
+        def watch(src, dst):
+            try:
+                return real_replace(src, dst)
+            except PermissionError:
+                refused.append(src)
+                raise
+
+        target = tmp_path / "withings_tokens.json"
+        target.write_text('{"refresh_token": "old"}')
+        reader = open(target)
+        timer = threading.Timer(0.1, reader.close)
+        timer.start()
+        try:
+            with patch.object(auth.os, "replace", watch):
+                auth._save_json(target, {"refresh_token": "new"})
+        finally:
+            timer.join()
+            reader.close()
+        assert json.loads(target.read_text()) == {"refresh_token": "new"}
+        # Without a refusal this proves nothing about the retry.
+        assert refused, "Windows replaced a file another process had open"
 
     def test_the_last_write_wins_intact(self, tmp_path):
         """Not an atomicity test: a single-threaded run cannot observe the gap.
@@ -840,22 +1050,26 @@ class TestTheTokenFileIsNeverExposed:
 
         assert json.loads(target.read_text())["refresh_token"] == "second"
 
-    def test_concurrent_writers_do_not_share_a_temp_path(self, tmp_path, monkeypatch):
-        """A fixed temp name lets one writer publish another's half-written file."""
-        names = []
-        real_mkstemp = auth.tempfile.mkstemp
+    def test_each_save_publishes_its_own_temp_file_from_the_same_directory(
+        self, tmp_path, monkeypatch
+    ):
+        """A fixed temp name lets one writer publish another's half-written
+        file, and a rename from another directory is not atomic."""
+        published = []
+        real_replace = os.replace
 
-        def spy(**kwargs):
-            fd, name = real_mkstemp(**kwargs)
-            names.append(name)
-            return fd, name
+        def spy(src, dst):
+            published.append(Path(src))
+            return real_replace(src, dst)
 
-        monkeypatch.setattr(auth.tempfile, "mkstemp", spy)
-        target = tmp_path / "withings_tokens.json"
+        monkeypatch.setattr(auth.os, "replace", spy)
+        folder = tmp_path.resolve()
+        target = folder / "withings_tokens.json"
         auth._save_json(target, {"refresh_token": "a"})
         auth._save_json(target, {"refresh_token": "b"})
 
-        assert len(set(names)) == 2
+        assert len(set(published)) == 2
+        assert all(p.parent == folder and p != target for p in published)
 
 
 class TestSetupAuthSurvivesABrokenClientFile:
@@ -1096,6 +1310,39 @@ class TestTheCallbackPortIsNotShared:
         assert exit_info.value.code == 1
         assert opened == [], opened
         assert str(auth.WITHINGS_CALLBACK_PORT) in capsys.readouterr().err
+
+    def test_a_save_that_fails_reports_its_type_not_its_paths(self, monkeypatch, capsys):
+        """The save needs write access to the directory and, on Windows, a file
+        nobody holds open, and an OSError's text names the install's paths."""
+        monkeypatch.setattr("builtins.input", lambda prompt: "supplied")
+
+        def refuse(path, data):
+            raise PermissionError(13, "Permission denied", "/home/someone/config/.tmpfile")
+
+        monkeypatch.setattr(auth, "_save_json", refuse)
+        with pytest.raises(SystemExit) as exit_info:
+            auth.setup_auth()
+
+        captured = capsys.readouterr()
+        assert exit_info.value.code == 1
+        expected = "Error: the credentials could not be saved (PermissionError)."
+        assert captured.err.strip() == expected
+        assert "/home/someone" not in captured.out
+
+    def test_setup_auth_saves_only_through_the_reporting_helper(self):
+        """The token save comes after the code is spent, where no test drives
+        the flow; a direct `_save_json` there would end in a traceback."""
+        import ast
+        import inspect
+
+        tree = ast.parse(inspect.getsource(auth.setup_auth))
+        called = {
+            node.func.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        assert "_save_json" not in called
+        assert "_save_or_exit" in called
 
 
 class TestTheCallbackPageEscapesWhatItShows:

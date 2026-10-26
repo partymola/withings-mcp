@@ -270,7 +270,8 @@ def _check_token_file() -> list[Finding]:
     else:
         findings.append(Finding("access token", OK, f"valid until {when:%Y-%m-%d %H:%M}"))
 
-    findings.extend(_check_token_file_writability(path))
+    # The save follows a symlink and writes beside the file it points at.
+    findings.extend(_check_token_file_writability(Path(os.path.realpath(path))))
     return findings
 
 
@@ -283,9 +284,10 @@ def _check_token_file_writability(path: Path) -> list[Finding]:
     server holds the replacement in memory and retries the save on each call,
     and loses it when it restarts.
 
-    What the save needs is the DIRECTORY, not the file: auth.py creates a temp
-    file beside the target and renames it over, so it needs write and execute
-    on the containing directory and nothing at all on the file itself. A
+    What the save needs is the DIRECTORY, not the file: auth.py follows any
+    symlink, creates a temp file beside the target and renames it over, so it
+    needs write and execute on the containing directory and nothing at all on
+    the file itself. The caller passes the resolved path for that reason. A
     read-only file in a writable directory saves fine; a writable file in a
     read-only directory does not. Checking the file - which is what an
     in-place rewrite would have needed - reported both backwards.

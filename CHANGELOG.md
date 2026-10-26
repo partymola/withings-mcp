@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A token refresh no longer saves over a grant that `withings-mcp auth` saved before the refresh finished. The newer grant wins while its access token is still valid.
 - A refused refresh is no longer reported as needing `withings-mcp auth` when the token file holds a different refresh token by then. This happens when `auth` completes during a refresh, or another server sharing the file refreshed first and saved in time. The server uses the new token if it is still valid. Otherwise it reports a network error, and the next request refreshes from the file.
 - Tool calls in one server no longer refresh the token at the same time. Withings replaces the refresh token on every refresh, so two refreshes at once spent the same one.
+- On Windows, saving a token waits briefly for another process to let go of the token file. Windows refuses to replace a file another process has open, and every server sharing the file opens it on each request, so `withings-mcp auth` could fail after spending its authorisation code.
+- A symlinked token file is saved where the link points, rather than replacing the link with a regular file, and `withings-mcp doctor` checks that directory. Each save is also synced to disk before it replaces the old file.
+- `withings-mcp auth` reports a credential file it cannot save by the kind of error, instead of a traceback naming paths on your machine.
 - A refreshed token whose save fails is still kept by the running server, and the save is now retried on each request. A stored token whose access token is blank is refreshed rather than sent.
 
 ## [0.8.0] - 2026-09-06
