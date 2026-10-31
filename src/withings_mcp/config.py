@@ -1,5 +1,9 @@
-"""Configuration paths and constants for the Withings MCP server."""
+"""Configuration paths and constants, and how a stored credential is read.
 
+`auth` and `doctor` both judge the token file, and `doctor` may not import `auth`.
+"""
+
+import math
 import os
 from pathlib import Path
 
@@ -27,3 +31,25 @@ WITHINGS_USER_V2_URL = "https://wbsapi.withings.net/v2/user"
 WITHINGS_SCOPES = "user.info,user.metrics,user.activity"
 WITHINGS_CALLBACK_PORT = 8585
 WITHINGS_REDIRECT_URI = f"http://localhost:{WITHINGS_CALLBACK_PORT}"
+
+
+def is_token(value) -> bool:
+    """Whether this is a string of RFC 6749's VSCHAR characters, printable ASCII, and not blank."""
+    return (
+        isinstance(value, str) and value.isascii() and value.isprintable() and bool(value.strip())
+    )
+
+
+def token_expiry(tokens) -> float:
+    """The stored expiry, or 0 when it is unusable.
+
+    A hand-edited or half-repaired expiry that is not a finite number counts as
+    expired, so a refresh decides.
+    """
+    value = tokens.get("expires_at", 0)
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return 0
+    try:
+        return value if math.isfinite(value) else 0
+    except OverflowError:
+        return 0

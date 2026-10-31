@@ -73,6 +73,29 @@ class TestEnvOverrides:
         assert cfg.CONFIG_DIR == cfg._PACKAGE_ROOT / "config"
 
 
+class TestTheTokenRule:
+    """RFC 6749: `VSCHAR = %x20-7E`, `access-token = 1*VSCHAR`, `refresh-token = 1*VSCHAR`.
+
+    Refusing a token of nothing but spaces is this package's addition.
+    """
+
+    def test_inside_a_token_exactly_the_vschar_range_is_accepted(self):
+        accepted = {code for code in range(0x80) if config.is_token(f"a{chr(code)}b")}
+        assert accepted == set(range(0x20, 0x7F))
+
+    def test_on_its_own_a_space_is_blank(self):
+        accepted = {code for code in range(0x80) if config.is_token(chr(code))}
+        assert accepted == set(range(0x21, 0x7F))
+
+    @pytest.mark.parametrize("char", ["é", " ", " ", "€", "😀"])
+    def test_nothing_outside_ascii_is_accepted(self, char):
+        assert not config.is_token(f"a{char}b")
+
+    @pytest.mark.parametrize("value", ["", "   ", None, True, 12345, 1.5, b"abc", ["x"], {"a": 1}])
+    def test_blank_and_anything_but_a_string_are_refused(self, value):
+        assert not config.is_token(value)
+
+
 class TestStaticConstants:
     def test_callback_port_and_redirect_uri_are_pinned(self):
         # Registered Withings apps whitelist this exact callback; pin it literally.

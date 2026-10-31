@@ -20,7 +20,7 @@ import threading
 import urllib.error
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import pytest
 
@@ -44,6 +44,29 @@ def _urlopen_returning(payload):
     cm.__enter__.return_value = resp
     cm.__exit__.return_value = False
     return Mock(return_value=cm)
+
+
+class _RotatingServer:
+    """A token endpoint that spends each refresh token on use, as Withings does.
+
+    Anything but the live token is refused. An accepted request consumes the
+    next answer, and the refresh token that answer delivers is the only live one.
+    """
+
+    def __init__(self, live, answers):
+        self.live = live
+        self.answers = list(answers)
+        self.sent = []
+
+    def __call__(self, request, timeout=None):
+        sent = parse_qs(request.data.decode())["refresh_token"][0]
+        self.sent.append(sent)
+        if sent != self.live:
+            return _urlopen_returning({"status": 401})()
+        answer = self.answers.pop(0)
+        body = answer.get("body")
+        self.live = body.get("refresh_token") if isinstance(body, dict) else None
+        return _urlopen_returning(answer)()
 
 
 def _frozen_time():
@@ -176,6 +199,284 @@ class TestRefreshToken:
         assert _stored()["refresh_token"] == "ref-keep"
         assert _stored()["userid"] == 7  # old userid preserved too
 
+    @pytest.mark.parametrize(
+        "unusable",
+        [None, "", "   ", 12345, "a\nb", "töken"],
+        ids=["null", "blank", "whitespace", "not-a-string", "newline", "non-ascii"],
+    )
+    def test_refresh_preserves_old_refresh_token_when_the_new_one_is_unusable(self, unusable):
+        """Saved, it replaces the live token, and the next refresh ends in "run
+        auth" with the credentials never having been judged. Keeping the stored
+        one helps only if Withings did not rotate on this answer."""
+        _write(_tokens(refresh="ref-keep", expires_at=_NOW - 1))
+        body = {"access_token": "tok-new", "refresh_token": unusable, "expires_in": 10800}
+        opener = _urlopen_returning({"status": 0, "body": body})
+        with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", opener):
+            assert auth.refresh_token() == "tok-new"
+        assert _stored()["access_token"] == "tok-new"
+        assert _stored()["refresh_token"] == "ref-keep"
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            {"status": 0},
+            {"status": 0, "body": None},
+            {"status": 0, "body": ["not", "an", "object"]},
+            {"status": 0, "body": {}},
+            {"status": 0, "body": {"access_token": ""}},
+            {"status": 0, "body": {"access_token": None}},
+            {"status": 0, "body": {"access_token": 12345}},
+            {"status": 0, "body": {"access_token": "   "}},
+            {"status": 0, "body": {"access_token": "", "refresh_token": ""}},
+            {"status": 0, "body": {"access_token": "", "refresh_token": "   "}},
+            {"status": 0, "body": {"access_token": "", "refresh_token": 12345}},
+            {"status": 0, "body": {"access_token": "a\nb"}},
+            {"status": 0, "body": {"access_token": "töken"}},
+            {"status": 0, "body": {"access_token": "", "refresh_token": "a\nb"}},
+            {"status": 0, "body": {"access_token": "", "refresh_token": "töken"}},
+        ],
+        ids=[
+            "no-body",
+            "null-body",
+            "body-not-an-object",
+            "empty-body",
+            "blank-access-token",
+            "null-access-token",
+            "access-token-not-a-string",
+            "whitespace-access-token",
+            "both-blank",
+            "whitespace-refresh-token",
+            "refresh-token-not-a-string",
+            "newline-access-token",
+            "non-ascii-access-token",
+            "newline-refresh-token",
+            "non-ascii-refresh-token",
+        ],
+    )
+    def test_a_success_status_with_nothing_to_save_leaves_the_file(self, answer):
+        """Nobody judged the credentials, and re-authorising rotates a token
+        file other hosts may share. The message tells the guard from the
+        catch-all, which raises the same class."""
+        stored = _tokens(expires_at=_NOW - 1)
+        _write(stored)
+        opener = _urlopen_returning(answer)
+        with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", opener):
+            with pytest.raises(auth.RefreshNetworkError) as caught:
+                auth.refresh_token()
+        assert str(caught.value) == "Withings returned no token."
+        assert _stored() == stored
+
+    @pytest.mark.parametrize(
+        "access",
+        [
+            {},
+            {"access_token": ""},
+            {"access_token": None},
+            {"access_token": 12345},
+            {"access_token": "   "},
+            {"access_token": "a\nb"},
+            {"access_token": "töken"},
+        ],
+        ids=["absent", "blank", "null", "not-a-string", "whitespace", "newline", "non-ascii"],
+    )
+    def test_a_refresh_token_delivered_without_an_access_token_is_saved_and_sent(self, access):
+        """The one sent is spent by now, so dropping this one leaves only `auth`."""
+        _write(_tokens(expires_at=_NOW - 1))
+        server = _RotatingServer(
+            "ref-old",
+            [
+                {"status": 0, "body": {"refresh_token": "ref-new", **access}},
+                {"status": 0, "body": {"access_token": "tok-2", "refresh_token": "ref-2"}},
+            ],
+        )
+        with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", server):
+            with pytest.raises(auth.RefreshNetworkError) as caught:
+                auth.refresh_token()
+            assert str(caught.value) == "Withings returned no token."
+            assert _stored() == {
+                "access_token": "",
+                "refresh_token": "ref-new",
+                "userid": 7,
+                "expires_at": 0,
+            }
+            assert auth.refresh_token() == "tok-2"
+        assert server.sent == ["ref-old", "ref-new"]
+        assert _stored()["refresh_token"] == "ref-2"
+
+    @pytest.mark.parametrize(
+        "expires_in",
+        ["10800", None, float("inf"), float("nan"), 0, -1, True, 10**400],
+        ids=["string", "null", "infinity", "nan", "zero", "negative", "boolean", "too-large"],
+    )
+    def test_a_lifetime_that_is_not_a_finite_positive_number_counts_as_already_expired(
+        self, expires_in
+    ):
+        """The tokens are good, and the refresh token may be the only live copy,
+        so the lifetime is what gets discarded."""
+        _write(_tokens(expires_at=_NOW - 1))
+        issued = {"access_token": "tok-new", "refresh_token": "ref-new", "expires_in": expires_in}
+        server = _RotatingServer(
+            "ref-old",
+            [
+                {"status": 0, "body": issued},
+                {"status": 0, "body": {"access_token": "tok-2", "refresh_token": "ref-2"}},
+            ],
+        )
+        with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", server):
+            assert auth.refresh_token() == "tok-new"
+            assert _stored()["access_token"] == "tok-new"
+            assert _stored()["refresh_token"] == "ref-new"
+            assert _stored()["expires_at"] == 0
+            assert auth.refresh_token() == "tok-2"
+        assert server.sent == ["ref-old", "ref-new"]
+
+    def test_an_answer_naming_no_lifetime_gets_the_three_hours_withings_issues(self):
+        _write(_tokens(expires_at=_NOW - 1))
+        body = {"access_token": "tok-new", "refresh_token": "ref-new"}
+        opener = _urlopen_returning({"status": 0, "body": body})
+        with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", opener):
+            auth.refresh_token()
+        assert _stored()["expires_at"] == _NOW + 10800
+
+    def test_a_lifetime_that_stays_unusable_refreshes_on_every_call(self):
+        """The cost of keeping the tokens: one refresh per call while answers stay like that."""
+        _write(_tokens(expires_at=_NOW - 1))
+        grants = [
+            {"access_token": f"tok-{n}", "refresh_token": f"ref-{n}", "expires_in": lifetime}
+            for n, lifetime in enumerate(["10800", None, "10800"])
+        ]
+        server = _RotatingServer("ref-old", [{"status": 0, "body": grant} for grant in grants])
+        with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", server):
+            assert [auth.refresh_token() for _ in range(3)] == ["tok-0", "tok-1", "tok-2"]
+        assert server.sent == ["ref-old", "ref-0", "ref-1"]
+
+    @pytest.mark.parametrize("expires_in", [1e308, 10800000], ids=["huge", "milliseconds"])
+    def test_a_huge_finite_lifetime_is_taken_at_its_word(self, expires_in):
+        """Deliberate: a cap would be an invented number, so do not add one.
+        AGENTS.md states what this costs."""
+        _write(_tokens(expires_at=_NOW - 1))
+        body = {"access_token": "tok-new", "refresh_token": "ref-new", "expires_in": expires_in}
+        opener = _urlopen_returning({"status": 0, "body": body})
+        with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", opener):
+            auth.refresh_token()
+            assert _stored()["expires_at"] == _NOW + expires_in
+            assert auth.refresh_token() == "tok-new"
+        opener.assert_called_once()
+
+    def test_a_stored_expiry_in_milliseconds_is_taken_at_its_word(self):
+        """Deliberate for the same reason. `doctor` reports this one and advises `auth`."""
+        _write(_tokens(expires_at=_NOW * 1000))
+        opener = Mock()
+        with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", opener):
+            assert auth.refresh_token() == "tok-old"
+        opener.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "answer, line",
+        [
+            ({"status": "MARKER"}, "Token refresh returned an unrecognised status"),
+            ({"status": ["MARKER"]}, "Token refresh returned an unrecognised status"),
+            ({"status": {"MARKER": "MARKER"}}, "Token refresh returned an unrecognised status"),
+            ({"status": 401, "error": "MARKER"}, "Token refresh refused with status 401"),
+            ({"status": 0, "body": "MARKER"}, "Token refresh returned no token payload"),
+            (
+                {"status": 0, "body": {"MARKER": "MARKER"}},
+                "Token refresh returned no token payload",
+            ),
+            (
+                {"status": 0, "body": {"access_token": "", "refresh_token": "MARKER"}},
+                "Token refresh returned a refresh token and no access token",
+            ),
+        ],
+        ids=[
+            "string-status",
+            "list-status",
+            "object-status",
+            "refusal",
+            "string-body",
+            "object-body",
+            "refresh-token-only",
+        ],
+    )
+    def test_no_part_of_a_response_reaches_the_log(self, answer, line, caplog):
+        _write(_tokens(expires_at=_NOW - 1))
+        opener = _urlopen_returning(answer)
+        with (
+            _frozen_time(),
+            patch("withings_mcp.auth.urllib.request.urlopen", opener),
+            caplog.at_level(logging.DEBUG, logger="withings_mcp.auth"),
+            pytest.raises((auth.TokenRefused, auth.RefreshNetworkError)),
+        ):
+            auth.refresh_token()
+        assert line in caplog.text
+        assert "MARKER" not in caplog.text
+
+    def test_a_status_code_is_logged(self, caplog):
+        _write(_tokens(expires_at=_NOW - 1))
+        opener = _urlopen_returning({"status": 2555})
+        with (
+            _frozen_time(),
+            patch("withings_mcp.auth.urllib.request.urlopen", opener),
+            caplog.at_level(logging.DEBUG, logger="withings_mcp.auth"),
+            pytest.raises(auth.RefreshNetworkError),
+        ):
+            auth.refresh_token()
+        assert "2555" in caplog.text
+
+    def test_a_boolean_status_is_not_logged_as_a_code(self, caplog):
+        _write(_tokens(expires_at=_NOW - 1))
+        opener = _urlopen_returning({"status": True})
+        with (
+            _frozen_time(),
+            patch("withings_mcp.auth.urllib.request.urlopen", opener),
+            caplog.at_level(logging.DEBUG, logger="withings_mcp.auth"),
+            pytest.raises(auth.RefreshNetworkError),
+        ):
+            auth.refresh_token()
+        assert "unrecognised status" in caplog.text
+        assert "True" not in caplog.text
+
+    @pytest.mark.parametrize("status", [1.5, 2555.0], ids=["fractional", "whole-float"])
+    def test_a_status_that_is_not_an_integer_is_not_logged(self, status, caplog):
+        _write(_tokens(expires_at=_NOW - 1))
+        opener = _urlopen_returning({"status": status})
+        with (
+            _frozen_time(),
+            patch("withings_mcp.auth.urllib.request.urlopen", opener),
+            caplog.at_level(logging.DEBUG, logger="withings_mcp.auth"),
+            pytest.raises(auth.RefreshNetworkError),
+        ):
+            auth.refresh_token()
+        assert "unrecognised status" in caplog.text
+        assert str(status) not in caplog.text
+
+    def test_a_refusal_code_sent_as_a_float_is_a_refusal_and_is_logged(self, caplog):
+        _write(_tokens(expires_at=_NOW - 1))
+        opener = _urlopen_returning({"status": 401.0})
+        with (
+            _frozen_time(),
+            patch("withings_mcp.auth.urllib.request.urlopen", opener),
+            caplog.at_level(logging.DEBUG, logger="withings_mcp.auth"),
+            pytest.raises(auth.TokenRefused),
+        ):
+            auth.refresh_token()
+        assert "status 401.0" in caplog.text
+
+    @pytest.mark.parametrize(
+        "expires_at", [float("inf"), 10**400], ids=["infinity", "too-large-for-a-float"]
+    )
+    def test_a_stored_expiry_that_is_not_finite_counts_as_expired(self, expires_at):
+        """Beyond float range no refresh would ever fall due: the token is sent
+        until it is rejected, and a rejection only reads the same file again,
+        which ends in "run auth". A finite value gets no such protection; see
+        test_a_stored_expiry_in_milliseconds_is_taken_at_its_word."""
+        _write(_tokens(expires_at=expires_at))
+        body = {"access_token": "tok-new", "refresh_token": "ref-new", "expires_in": 10800}
+        opener = _urlopen_returning({"status": 0, "body": body})
+        with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", opener):
+            assert auth.refresh_token() == "tok-new"
+        assert _stored()["expires_at"] == _NOW + 10800
+
     def test_a_valid_token_does_not_need_the_client_file(self):
         """Only a refresh uses it, so a moment when it cannot be read must not
         refuse a token that needs no refresh."""
@@ -183,18 +484,55 @@ class TestRefreshToken:
         with _frozen_time():
             assert auth.refresh_token() == "tok-old"
 
-    def test_a_stored_token_with_no_access_token_is_refreshed_rather_than_sent(self):
-        _write(_tokens(access="", expires_at=_NOW + 10_000))
+    @pytest.mark.parametrize(
+        "access",
+        ["", "   ", 12345, "a\nb", "töken"],
+        ids=["blank", "whitespace", "number", "newline", "non-ascii"],
+    )
+    def test_a_stored_token_with_no_access_token_is_refreshed_rather_than_sent(self, access):
+        _write(_tokens(access=access, expires_at=_NOW + 10_000))
         body = {"access_token": "tok-new", "refresh_token": "ref-new", "expires_in": 10800}
         opener = _urlopen_returning({"status": 0, "body": body})
         with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", opener):
             assert auth.refresh_token() == "tok-new"
+        assert _stored()["refresh_token"] == "ref-new"
 
     def test_expired_without_refresh_token_raises(self):
         _write(_tokens(refresh="", expires_at=_NOW - 1))
         with _frozen_time():
             with pytest.raises(RuntimeError):
                 auth.refresh_token()
+
+    @pytest.mark.parametrize(
+        "refresh",
+        ["   ", 12345, "a\nb", "töken", ["x"]],
+        ids=["whitespace", "number", "newline", "non-ascii", "list"],
+    )
+    def test_a_stored_refresh_token_that_is_not_a_token_is_never_sent(self, refresh):
+        """Withings cannot accept it, and the refusal would be a verdict on a
+        value that was never a credential."""
+        _write(_tokens(access="", refresh=refresh, expires_at=0))
+        opener = Mock()
+        with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", opener):
+            with pytest.raises(auth.TokenRefused):
+                auth.refresh_token()
+        opener.assert_not_called()
+
+    def test_a_token_holding_every_legal_character_class_is_sent_saved_and_used(self):
+        """Every legal character class at once: fixtures of letters and hyphens
+        pass a rule that wrongly refuses the rest."""
+        stored = "ref.a-b_c~d/e+f= g"
+        access = "tok.h-i_j~k/l+m= n"
+        issued = "ref.o-p_q~r/s+t="
+        _write(_tokens(refresh=stored, expires_at=_NOW - 1))
+        answer = {"access_token": access, "refresh_token": issued, "expires_in": 10800}
+        server = _RotatingServer(stored, [{"status": 0, "body": answer}])
+        with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", server):
+            assert auth.refresh_token() == access
+            assert _stored()["access_token"] == access
+            assert _stored()["refresh_token"] == issued
+            assert auth.refresh_token() == access
+        assert server.sent == [stored]
 
     def test_refresh_nonzero_status_raises(self):
         """A refusal, which must stay distinguishable from a network fault.
@@ -650,6 +988,99 @@ class TestTheTokenFileIsTheOnlyCopy:
             with pytest.raises(auth.TokenRefused):
                 auth.refresh_token()
         assert auth._unsaved is None
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            {"status": 0},
+            {"status": 0, "body": None},
+            {"status": 0, "body": {"access_token": "", "refresh_token": ""}},
+        ],
+        ids=["no-body", "null-body", "both-blank"],
+    )
+    def test_a_success_status_with_nothing_to_save_keeps_a_held_grant(self, answer):
+        """Nothing judged the held grant, and it may be the only live copy."""
+        stored = _tokens(expires_at=_NOW - 1)
+        _write(stored)
+        answers = [{"status": 0, "body": dict(self._REFRESHED, expires_in=0)}, answer]
+
+        def urlopen(request, timeout=None):
+            return _urlopen_returning(answers.pop(0))()
+
+        with (
+            _frozen_time(),
+            self._fail_saves(9),
+            patch("withings_mcp.auth.urllib.request.urlopen", urlopen),
+        ):
+            auth.refresh_token()
+            with pytest.raises(auth.RefreshNetworkError) as caught:
+                auth.refresh_token()
+        assert str(caught.value) == "Withings returned no token."
+        assert auth._unsaved[1]["refresh_token"] == "ref-new"
+        assert _stored() == stored
+
+    def test_a_later_grant_wins_over_a_refresh_token_delivered_alone(self):
+        """The same rule as a complete answer: `auth` saved it during the request."""
+        _write(_tokens(expires_at=_NOW - 1))
+        later = _tokens(access="tok-auth", refresh="ref-auth", expires_at=_NOW + 5000)
+        urlopen = self._urlopen_writing(
+            {"status": 0, "body": {"access_token": "", "refresh_token": "ref-new"}}, later
+        )
+        with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", urlopen):
+            assert auth.refresh_token() == "tok-auth"
+        assert _stored() == later
+
+    def test_a_refresh_token_delivered_alone_is_held_when_its_save_fails(self):
+        """The file's token is spent, so the held one is what the next call sends."""
+        stored = _tokens(expires_at=_NOW - 1)
+        _write(stored)
+        server = _RotatingServer(
+            "ref-old",
+            [
+                {"status": 0, "body": {"access_token": "", "refresh_token": "ref-new"}},
+                {"status": 0, "body": {"access_token": "tok-2", "refresh_token": "ref-2"}},
+            ],
+        )
+        # Two failures: the save, and the retry before the second refresh.
+        with (
+            _frozen_time(),
+            self._fail_saves(2),
+            patch("withings_mcp.auth.urllib.request.urlopen", server),
+        ):
+            with pytest.raises(auth.RefreshNetworkError) as caught:
+                auth.refresh_token()
+            assert str(caught.value) == "Withings returned no token."
+            assert _stored() == stored
+            assert auth._unsaved[1]["refresh_token"] == "ref-new"
+            assert auth.refresh_token() == "tok-2"
+        assert server.sent == ["ref-old", "ref-new"]
+        assert _stored()["refresh_token"] == "ref-2"
+        assert auth._unsaved is None
+
+    @pytest.mark.parametrize(
+        "refresh",
+        [{}, {"refresh_token": None}, {"refresh_token": ""}],
+        ids=["omitted", "null", "blank"],
+    )
+    def test_a_held_grant_keeps_its_own_refresh_token_when_the_answer_has_none(self, refresh):
+        """The file's is the one the held grant replaced, and is retired."""
+        _write(_tokens(expires_at=_NOW - 1))
+        answers = [
+            {"status": 0, "body": dict(self._REFRESHED, expires_in=0)},
+            {"status": 0, "body": {"access_token": "tok-2", "expires_in": 10800, **refresh}},
+        ]
+
+        def urlopen(request, timeout=None):
+            return _urlopen_returning(answers.pop(0))()
+
+        with (
+            _frozen_time(),
+            self._fail_saves(2),
+            patch("withings_mcp.auth.urllib.request.urlopen", urlopen),
+        ):
+            auth.refresh_token()
+            assert auth.refresh_token() == "tok-2"
+        assert _stored()["refresh_token"] == "ref-new"
 
     def test_concurrent_calls_refresh_once(self):
         """Tool calls run in worker threads. Unserialised, two spend the same
@@ -1136,6 +1567,9 @@ class TestSetupAuthSurvivesABrokenClientFile:
             '{"client_id": "abc"}',
             '{"client_id": 12345, "client_secret": "x"}',
             '{"client_id": "", "client_secret": "x"}',
+            '{"client_id": "   ", "client_secret": "x"}',
+            '{"client_id": "a\\nb", "client_secret": "x"}',
+            '{"client_id": "abc", "client_secret": "töken"}',
         ],
         ids=[
             "absent",
@@ -1146,6 +1580,9 @@ class TestSetupAuthSurvivesABrokenClientFile:
             "id-without-secret",
             "id-not-a-string",
             "id-empty-string",
+            "id-whitespace",
+            "id-newline",
+            "secret-non-ascii",
         ],
     )
     def test_it_reaches_the_prompts_rather_than_raising(self, contents, tmp_path, monkeypatch):
@@ -1153,10 +1590,16 @@ class TestSetupAuthSurvivesABrokenClientFile:
         assert prompts, "setup_auth never reached a prompt"
         assert "Client ID" in prompts[0]
 
-    def test_a_usable_client_file_still_offers_re_use(self, tmp_path, monkeypatch):
-        prompts = self._run_with_client_file(
-            '{"client_id": "abc", "client_secret": "def"}', tmp_path, monkeypatch
-        )
+    @pytest.mark.parametrize(
+        "contents",
+        [
+            '{"client_id": "abc", "client_secret": "def"}',
+            '{"client_id": "a.b-c_d", "client_secret": "e~f/g+h= i"}',
+        ],
+        ids=["plain", "every-legal-character-class"],
+    )
+    def test_a_usable_client_file_still_offers_re_use(self, contents, tmp_path, monkeypatch):
+        prompts = self._run_with_client_file(contents, tmp_path, monkeypatch)
         assert "Re-use" in prompts[0]
 
 
@@ -1329,8 +1772,8 @@ class TestTheCallbackPortIsNotShared:
         assert "/home/someone" not in captured.out
 
     def test_setup_auth_saves_only_through_the_reporting_helper(self):
-        """The token save comes after the code is spent, where no test drives
-        the flow; a direct `_save_json` there would end in a traceback."""
+        """The token save comes after the code is spent, where a direct
+        `_save_json` would end in a traceback."""
         import ast
         import inspect
 
@@ -1342,6 +1785,125 @@ class TestTheCallbackPortIsNotShared:
         }
         assert "_save_json" not in called
         assert "_save_or_exit" in called
+
+
+class TestTheAnswerToACodeExchange:
+    """The authorisation code is spent by the time the answer is read, so it
+    ends in a saved grant or a message, never a traceback. An answer with neither
+    token leaves the file as it was. Drives the real handler and the real
+    exchange."""
+
+    _GOOD = _tokens(access="tok-good", refresh="ref-good")
+
+    def _authorise(self, answer, monkeypatch):
+        _write(self._GOOD)
+        monkeypatch.setattr(auth, "CONFIG_DIR", auth.WITHINGS_TOKENS_PATH.parent)
+        monkeypatch.setattr("builtins.input", lambda prompt: "y")
+        opened = []
+        monkeypatch.setattr(auth.webbrowser, "open", opened.append)
+
+        class Server:
+            def __init__(self, address, handler):
+                self.handler = handler
+
+            def handle_request(self):
+                state = parse_qs(urlparse(opened[0]).query)["state"][0]
+                request = self.handler.__new__(self.handler)
+                request.path = "/?" + urlencode({"state": state, "code": "the-code"})
+                request._respond = lambda status_code, message: None
+                request.do_GET()
+
+            def server_close(self):
+                pass
+
+        monkeypatch.setattr(auth, "_CallbackServer", Server)
+        opener = _urlopen_returning({"status": 0, "body": answer})
+        with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", opener):
+            auth.setup_auth()
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            {},
+            {"access_token": "", "refresh_token": ""},
+            {"access_token": None},
+            {"access_token": "   ", "refresh_token": 12345},
+        ],
+        ids=["empty", "both-blank", "null", "whitespace-and-number"],
+    )
+    def test_an_answer_with_no_usable_token_leaves_the_grant_and_says_so(
+        self, answer, monkeypatch, capsys
+    ):
+        with pytest.raises(SystemExit) as exit_info:
+            self._authorise(answer, monkeypatch)
+        assert exit_info.value.code == 1
+        assert "Authorisation failed" in capsys.readouterr().err
+        assert _stored() == self._GOOD
+
+    def test_a_refresh_token_with_no_access_token_is_saved_for_the_next_call(self, monkeypatch):
+        self._authorise({"refresh_token": "ref-x"}, monkeypatch)
+        assert _stored() == {
+            "access_token": "",
+            "refresh_token": "ref-x",
+            "userid": None,
+            "expires_at": 0,
+        }
+
+    @pytest.mark.parametrize(
+        "expires_in", ["10800", None, float("inf")], ids=["string", "null", "infinity"]
+    )
+    def test_a_lifetime_that_cannot_be_used_saves_the_grant_as_expired(
+        self, expires_in, monkeypatch
+    ):
+        answer = {"access_token": "tok-x", "refresh_token": "ref-x", "expires_in": expires_in}
+        self._authorise(answer, monkeypatch)
+        assert _stored()["access_token"] == "tok-x"
+        assert _stored()["refresh_token"] == "ref-x"
+        assert _stored()["expires_at"] == 0
+
+    @pytest.mark.parametrize(
+        "delivered, stored_refresh",
+        [({"refresh_token": "ref-x"}, "ref-x"), ({}, "")],
+        ids=["complete", "access-token-only"],
+    )
+    def test_an_answer_with_an_access_token_is_saved(self, delivered, stored_refresh, monkeypatch):
+        answer = {"access_token": "tok-x", "userid": 3, "expires_in": 60, **delivered}
+        self._authorise(answer, monkeypatch)
+        assert _stored() == {
+            "access_token": "tok-x",
+            "refresh_token": stored_refresh,
+            "userid": 3,
+            "expires_at": _NOW + 60,
+        }
+
+    def test_an_answer_holding_every_legal_character_class_is_saved(self, monkeypatch):
+        answer = {"access_token": "tok.a-b_c~d/e+f= g", "refresh_token": "ref.h-i_j~k/l+m="}
+        self._authorise(answer, monkeypatch)
+        assert _stored()["access_token"] == answer["access_token"]
+        assert _stored()["refresh_token"] == answer["refresh_token"]
+
+    @pytest.mark.parametrize(
+        "delivered",
+        [{}, {"refresh_token": "   "}, {"refresh_token": 12345}],
+        ids=["no-refresh-token", "whitespace-refresh-token", "number-refresh-token"],
+    )
+    @pytest.mark.parametrize(
+        "expires_in",
+        ["10800", None, float("inf"), float("nan"), 0, -1, True],
+        ids=["string", "null", "infinity", "nan", "zero", "negative", "boolean"],
+    )
+    def test_a_sign_in_with_nothing_to_refresh_from_keeps_a_usable_expiry(
+        self, expires_in, delivered, monkeypatch
+    ):
+        """Saved as expired, the call straight after "Setup complete" says run auth."""
+        self._authorise(
+            {"access_token": "tok-x", "expires_in": expires_in, **delivered}, monkeypatch
+        )
+        assert _stored()["expires_at"] == _NOW + 10800
+        opener = Mock()
+        with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", opener):
+            assert auth.refresh_token() == "tok-x"
+        opener.assert_not_called()
 
 
 class TestTheCallbackPageEscapesWhatItShows:

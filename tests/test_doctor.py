@@ -18,6 +18,7 @@ import sqlite3
 import sys
 import time
 from datetime import date, timedelta
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -89,6 +90,11 @@ def _severities(findings, name):
     return {f.severity for f in _named(findings, name)}
 
 
+def _advice(findings):
+    """Everything the findings say. `format_report` drops an OK finding's fix, so not that."""
+    return " ".join(f"{f.detail} {f.fix or ''}" for f in findings)
+
+
 class TestNeverCreatesTheDatabase:
     """Invariant 1 and 2 - the reason the command exists.
 
@@ -143,8 +149,8 @@ class TestStaysOffline:
     """Invariant: no code path can reach the token-writing half of the server.
 
     Asserted structurally rather than by behaviour. `auth.refresh_token` sends
-    the stored refresh token and rewrites the file with what comes back, so a
-    diagnostic that imported it could disturb whichever host owns the
+    the stored refresh token and rewrites the file, so a diagnostic that
+    imported it could disturb whichever host owns the
     credentials - and no test watching a healthy setup would notice.
     """
 
@@ -386,6 +392,144 @@ class TestCredentials:
         _write_client(config_dir)
         _write_tokens(config_dir, refresh_token="")
         assert doctor.FAIL in _severities(doctor.check_credentials(), "credentials")
+
+    @pytest.mark.parametrize(
+        "access", ["", "   ", 12345], ids=["blank", "whitespace", "not-a-string"]
+    )
+    def test_a_refresh_token_with_no_access_token_is_not_a_reason_to_re_authorise(
+        self, setup, access
+    ):
+        """A refresh that delivers only a refresh token saves this on purpose,
+        and the next call refreshes from it; `auth` would rotate a shared file."""
+        config_dir, _ = setup
+        _write_client(config_dir)
+        _write_tokens(config_dir, access_token=access, expires_at=0)
+        findings = doctor.check_credentials()
+        assert _severities(findings, "credentials") == {doctor.OK}
+        assert "the next call refreshes from it" in _named(findings, "credentials")[0].detail
+        assert _severities(findings, "access token") == {doctor.OK}
+        assert "auth" not in _advice(findings)
+
+    @pytest.mark.parametrize(
+        "refresh", ["", "   ", 12345], ids=["blank", "whitespace", "not-a-string"]
+    )
+    def test_no_token_at_all_names_both(self, setup, refresh):
+        config_dir, _ = setup
+        _write_client(config_dir)
+        _write_tokens(config_dir, access_token="", refresh_token=refresh)
+        findings = doctor.check_credentials()
+        assert _severities(findings, "credentials") == {doctor.FAIL}
+        assert "access_token, refresh_token" in _named(findings, "credentials")[0].detail
+
+    def test_a_token_holding_every_legal_character_class_is_present(self, setup):
+        config_dir, _ = setup
+        _write_client(config_dir)
+        _write_tokens(
+            config_dir, access_token="tok.a-b_c~d/e+f= g", refresh_token="ref.a-b_c~d/e+f="
+        )
+        findings = doctor.check_credentials()
+        assert _named(findings, "credentials")[0].detail == "access and refresh tokens present"
+
+    @pytest.mark.parametrize(
+        "contents, refreshes",
+        [
+            ('{"refresh_token": "r"}', True),
+            ('{"access_token": "a", "refresh_token": "r"}', True),
+            ('{"access_token": "a", "refresh_token": "r", "expires_at": null}', True),
+            ('{"access_token": "a", "refresh_token": "r", "expires_at": "soon"}', True),
+            ('{"access_token": "a", "refresh_token": "r", "expires_at": Infinity}', True),
+            ('{"access_token": "a", "refresh_token": "r", "expires_at": -Infinity}', True),
+            ('{"access_token": "a", "refresh_token": "r", "expires_at": NaN}', True),
+            ('{"access_token": "a", "refresh_token": "r", "expires_at": 1' + "0" * 400 + "}", True),
+            ('{"access_token": "a", "refresh_token": "r", "expires_at": -1e308}', True),
+            ('{"access_token": "", "refresh_token": "r", "expires_at": 1e308}', True),
+            ('{"access_token": "", "refresh_token": "r", "expires_at": 9999999999}', True),
+            ('{"access_token": "a\\nb", "refresh_token": "r", "expires_at": 9999999999}', True),
+            ('{"access_token": "a", "refresh_token": "r", "expires_at": 1e308}', False),
+            ('{"access_token": "a", "refresh_token": "r", "expires_at": 1700000000000}', False),
+        ],
+        ids=[
+            "only-a-refresh-token",
+            "absent",
+            "null",
+            "text",
+            "infinity",
+            "negative-infinity",
+            "nan",
+            "401-digits",
+            "huge-and-negative",
+            "huge-with-no-access-token",
+            "future-with-a-blank-access-token",
+            "future-with-a-malformed-access-token",
+            "huge",
+            "milliseconds",
+        ],
+    )
+    def test_the_expiry_advice_agrees_with_what_the_next_call_does(
+        self, setup, monkeypatch, contents, refreshes
+    ):
+        """Advising `auth` for a file the next call repairs rotates a token file
+        other hosts may share. A finite expiry past the calendar is the opposite
+        case: the token is sent until it is rejected, and no refresh runs."""
+        config_dir, _ = setup
+        _write_client(config_dir)
+        path = config_dir / "withings_tokens.json"
+        path.write_text(contents)
+
+        findings = doctor.check_credentials()
+        assert ("auth" not in _advice(findings)) == refreshes
+        assert _severities(findings, "access token") == {doctor.OK if refreshes else doctor.WARN}
+
+        monkeypatch.setattr(auth, "WITHINGS_TOKENS_PATH", path)
+        monkeypatch.setattr(auth, "WITHINGS_CLIENT_PATH", config_dir / "withings_client.json")
+        monkeypatch.setattr(auth, "_unsaved", None)
+        answer = MagicMock()
+        answer.__enter__.return_value.read.return_value = json.dumps(
+            {"status": 0, "body": {"access_token": "tok-new", "refresh_token": "ref-new"}}
+        ).encode()
+        opener = MagicMock(return_value=answer)
+        with patch.object(auth.urllib.request, "urlopen", opener):
+            auth.refresh_token()
+        assert opener.call_count == (1 if refreshes else 0)
+
+    @pytest.mark.parametrize("access", ["", "   ", 12345, "a\nb"], ids=repr)
+    def test_an_access_token_the_next_call_will_not_send_is_not_called_valid(self, setup, access):
+        """Its expiry can be in the future, and the next call refreshes all the same."""
+        config_dir, _ = setup
+        _write_client(config_dir)
+        _write_tokens(config_dir, access_token=access, expires_at=time.time() + 3600)
+        found = _named(doctor.check_credentials(), "access token")[0]
+        assert found.severity == doctor.OK
+        assert "valid until" not in found.detail
+        assert "the next call refreshes" in found.detail
+
+    def test_an_access_token_the_next_call_will_send_is_called_valid(self, setup):
+        config_dir, _ = setup
+        _write_client(config_dir)
+        _write_tokens(config_dir, expires_at=time.time() + 3600)
+        found = _named(doctor.check_credentials(), "access token")[0]
+        assert found.severity == doctor.OK
+        assert "valid until" in found.detail
+
+    @pytest.mark.parametrize(
+        "contents",
+        [
+            '{"access_token": "a"}',
+            '{"access_token": "a", "refresh_token": "   ", "expires_at": "x"}',
+            '{"access_token": "", "refresh_token": "", "expires_at": 9999999999}',
+        ],
+        ids=["no-refresh-token", "malformed-refresh-token", "no-token-with-a-future-expiry"],
+    )
+    def test_an_unusable_expiry_with_nothing_to_refresh_from_still_advises_auth(
+        self, setup, contents
+    ):
+        """The next call has nothing to send, so `auth` is the remedy here."""
+        config_dir, _ = setup
+        _write_client(config_dir)
+        (config_dir / "withings_tokens.json").write_text(contents)
+        findings = doctor.check_credentials()
+        assert _severities(findings, "access token") == {doctor.WARN}
+        assert "withings-mcp auth" in _named(findings, "access token")[0].fix
 
     def test_expired_access_token_is_normal(self, setup):
         """Withings access tokens last three hours; expiry between syncs is routine."""

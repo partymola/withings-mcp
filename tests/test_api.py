@@ -7,6 +7,7 @@ import unittest
 import urllib.error
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+from urllib.parse import parse_qs
 
 from tests.fixtures import fake_api_response
 from withings_mcp import api, auth
@@ -332,26 +333,62 @@ class TestAgainstTheRealRefresh(unittest.TestCase):
                 self._post_with_token_file(tokens)
         self.assertNotIsInstance(caught.exception, api.WithingsAuthError)
 
-    def test_a_response_missing_its_body_is_reported_not_raised(self):
-        """A missing body is refused by a guard, not left to raise from the indexing below it.
-
-        auth is asserted directly so the test discriminates the guard from the
-        catch-all, rather than passing either way.
-        """
+    def test_a_success_status_with_no_payload_is_not_an_auth_failure(self):
+        """Nobody judged the credentials, so re-authorising is the wrong advice."""
         tokens = '{"access_token": "a", "refresh_token": "r", "expires_at": 0}'
-        with self._urlopen_returning(b'{"status": 0}'):
-            with self.assertRaises(RuntimeError) as caught:
-                with (
-                    patch.object(auth, "WITHINGS_TOKENS_PATH", self.dir / "withings_tokens.json"),
-                    patch.object(auth, "WITHINGS_CLIENT_PATH", self.dir / "withings_client.json"),
-                ):
-                    (self.dir / "withings_tokens.json").write_text(tokens)
-                    (self.dir / "withings_client.json").write_text(
-                        '{"client_id": "i", "client_secret": "s"}'
-                    )
-                    auth.refresh_token()
-        self.assertNotIsInstance(caught.exception, auth.RefreshNetworkError)
-        self.assertIn("Token refresh failed", str(caught.exception))
+        for payload in (
+            b'{"status": 0}',
+            b'{"status": 0, "body": null}',
+            b'{"status": 0, "body": ["not", "an", "object"]}',
+        ):
+            with self.subTest(payload=payload):
+                with self._urlopen_returning(payload):
+                    with self.assertRaises(api.WithingsAPIError):
+                        self._post_with_token_file(tokens)
+
+    def test_a_success_status_with_an_unusable_token_is_neither_saved_nor_sent(self):
+        """Nothing in the answer can be used, so the file stays as it was."""
+        tokens = '{"access_token": "a", "refresh_token": "r", "expires_at": 0}'
+        for unusable in ("", "   ", None, 12345):
+            with self.subTest(access_token=unusable):
+                sent = []
+                refreshed = fake_api_response(status=0, body={"access_token": unusable})
+
+                def urlopen(request, timeout=None):
+                    if request.full_url == auth.WITHINGS_TOKEN_URL:
+                        return _mock_urlopen(refreshed)
+                    sent.append(request.get_header("Authorization"))
+                    return _mock_urlopen(fake_api_response(status=401))
+
+                with patch.object(api.urllib.request, "urlopen", urlopen):
+                    with self.assertRaises(api.WithingsAPIError):
+                        self._post_with_token_file(tokens)
+                self.assertEqual(sent, [])
+                self.assertEqual(
+                    json.loads((self.dir / "withings_tokens.json").read_text()), json.loads(tokens)
+                )
+
+    def test_a_refresh_token_delivered_without_an_access_token_is_sent_by_the_next_call(self):
+        """Withings rotates the token, so the one the first call sent is spent."""
+        answers = [
+            fake_api_response(status=0, body={"access_token": "", "refresh_token": "r-new"}),
+            fake_api_response(status=0, body={"access_token": "a-new", "refresh_token": "r-2"}),
+        ]
+        sent = []
+
+        def urlopen(request, timeout=None):
+            if request.full_url == auth.WITHINGS_TOKEN_URL:
+                sent.append(parse_qs(request.data.decode())["refresh_token"][0])
+                return _mock_urlopen(answers.pop(0))
+            return _mock_urlopen(fake_api_response(status=0, body={}))
+
+        with patch.object(api.urllib.request, "urlopen", urlopen):
+            with self.assertRaises(api.WithingsAPIError):
+                self._post_with_token_file(
+                    '{"access_token": "a", "refresh_token": "r", "expires_at": 0}'
+                )
+            self.assertEqual(self._post_with_token_file(None), {})
+        self.assertEqual(sent, ["r", "r-new"])
 
     def test_a_rate_limit_over_http_is_not_an_auth_failure(self):
         """429 is a 4xx that carries no judgement on the credentials.

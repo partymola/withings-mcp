@@ -17,8 +17,8 @@ rather than incidental:
 
 Of this package only `config` and `db` are imported: nothing here calls
 `auth.refresh_token`, which sends the stored refresh token and rewrites the
-token file with whatever comes back. A diagnostic that did that could disturb
-whichever host legitimately owns the credentials.
+token file. A diagnostic that did that could disturb whichever host legitimately
+owns the credentials.
 """
 
 import json
@@ -232,8 +232,14 @@ def _check_token_file() -> list[Finding]:
         ]
 
     findings = []
-    missing = [k for k in ("access_token", "refresh_token") if not data.get(k)]
-    if missing:
+    missing = [k for k in ("access_token", "refresh_token") if not config.is_token(data.get(k))]
+    if missing == ["access_token"]:
+        # A refresh answer can deliver only a refresh token, and this is what it
+        # saves. The next call refreshes from it, so "auth" is the wrong remedy.
+        findings.append(
+            Finding("credentials", OK, "refresh token present; the next call refreshes from it")
+        )
+    elif missing:
         findings.append(
             Finding(
                 "credentials",
@@ -247,14 +253,33 @@ def _check_token_file() -> list[Finding]:
 
     expires_at = data.get("expires_at")
     when = _timestamp_or_none(expires_at)
-    if when is None:
+    has_access_token = config.is_token(data.get("access_token"))
+    if has_access_token and when is None and config.token_expiry(data) > time.time():
         findings.append(
             Finding(
                 "access token",
                 WARN,
-                "expires_at is missing, not a number, or not a usable timestamp, so "
-                "expiry cannot be checked. A value in milliseconds rather than "
-                "seconds does this.",
+                "expires_at is a number too large to be a date, so the access token is "
+                "sent until Withings rejects it and no refresh runs. A value in "
+                "milliseconds rather than seconds does this.",
+                "Re-run `withings-mcp auth`.",
+            )
+        )
+    elif (not has_access_token or when is None) and config.is_token(data.get("refresh_token")):
+        findings.append(
+            Finding(
+                "access token",
+                OK,
+                "the access token or its expiry cannot be used; the next call refreshes.",
+            )
+        )
+    elif not has_access_token or when is None:
+        findings.append(
+            Finding(
+                "access token",
+                WARN,
+                "the access token or its expiry cannot be used, and there is no refresh "
+                "token to replace them with.",
                 "Re-run `withings-mcp auth`.",
             )
         )
@@ -278,11 +303,11 @@ def _check_token_file() -> list[Finding]:
 def _check_token_file_writability(path: Path) -> list[Finding]:
     """A refresh that cannot be saved leaves its token only in memory.
 
-    A refresh may return a replacement refresh token - auth.py stores whichever
-    it gets and falls back to the existing one when the response carries none.
-    If the save fails, the token it replaced may already be spent: a running
-    server holds the replacement in memory and retries the save on each call,
-    and loses it when it restarts.
+    A refresh may return a replacement refresh token. auth.py stores it when it
+    passes `config.is_token` and otherwise keeps the existing one. If the save
+    fails, the token it replaced may already be spent: a running server holds
+    the replacement in memory and retries the save on each call, and loses it
+    when it restarts.
 
     What the save needs is the DIRECTORY, not the file: auth.py follows any
     symlink, creates a temp file beside the target and renames it over, so it

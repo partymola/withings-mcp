@@ -9,6 +9,7 @@ import html
 import http.client
 import json
 import logging
+import math
 import os
 import secrets
 import socket
@@ -32,6 +33,8 @@ from .config import (
     WITHINGS_SCOPES,
     WITHINGS_TOKEN_URL,
     WITHINGS_TOKENS_PATH,
+    is_token,
+    token_expiry,
 )
 from .errors import WithingsError
 
@@ -48,8 +51,12 @@ _REFUSAL_CODES = frozenset({400, 401})
 # transient server condition as an auth failure tells the user to re-authorise,
 # which rewrites a token file other hosts share, while the opposite mistake
 # only under-advises. api.post takes the same view of an unknown status for a
-# data request, defaulting it to WithingsAPIError.
-_REFUSAL_STATUSES = frozenset({342, 401})
+# data request, defaulting it to WithingsAPIError. A tuple, not a set: the
+# status comes from the response body and may be unhashable.
+_REFUSAL_STATUSES = (342, 401)
+
+# The lifetime Withings issues, for an answer that names none.
+_DEFAULT_LIFETIME_SECONDS = 10800
 
 
 class _CallbackServer(HTTPServer):
@@ -78,8 +85,7 @@ class TokenRefused(WithingsError, RuntimeError):
     """The credentials are treated as unusable.
 
     Raised when the server refuses them and when the credential files cannot
-    supply them. Also raised when the server answers status 0 with no token
-    payload, where nothing has judged them.
+    supply them.
 
     The only failure that warrants telling the user to re-authorise, which
     rewrites a token file other hosts may share.
@@ -213,27 +219,57 @@ def _exchange_code(code, client_id, client_secret):
         return None, "Token exchange failed (unrecognised status)"
 
     payload = body.get("body")
-    if not isinstance(payload, dict):
+    if not _carries_a_token(payload):
         return None, "Token exchange failed (unexpected response shape)"
 
     return payload, None
 
 
-def _expires_at(tokens):
-    """The stored expiry, or 0 when it is unusable.
+def _carries_a_token(payload):
+    return isinstance(payload, dict) and (
+        is_token(payload.get("access_token")) or is_token(payload.get("refresh_token"))
+    )
 
-    A non-numeric expiry - hand-edited, or half-repaired - counts as expired
-    rather than raising on the comparison, so a refresh decides.
+
+def _expiry_after(expires_in):
+    """When a token with this lifetime expires, or 0 if it is not a finite positive number.
+
+    0 counts the token as already expired, so the next call refreshes.
     """
-    value = tokens.get("expires_at", 0)
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
+    if not isinstance(expires_in, (int, float)) or isinstance(expires_in, bool) or expires_in <= 0:
         return 0
-    return value
+    try:
+        expires_at = time.time() + expires_in
+    except OverflowError:
+        return 0
+    return expires_at if math.isfinite(expires_at) else 0
+
+
+def _grant_from(answer, refresh_token, userid):
+    """What to save for a success answer, given what to keep where it has none.
+
+    An access token that cannot be used is stored empty and expired, so a
+    refresh token delivered with it still reaches the file. An unusable lifetime
+    counts as already expired only where a refresh token can replace the grant;
+    with none, expired means "run auth" on the very next call.
+    """
+    has_access_token = is_token(answer.get("access_token"))
+    new_refresh = answer.get("refresh_token")
+    kept_refresh = new_refresh if is_token(new_refresh) else refresh_token
+    expires_at = _expiry_after(answer.get("expires_in", _DEFAULT_LIFETIME_SECONDS))
+    if not expires_at and not kept_refresh:
+        expires_at = _expiry_after(_DEFAULT_LIFETIME_SECONDS)
+    return {
+        "access_token": answer["access_token"] if has_access_token else "",
+        "refresh_token": kept_refresh,
+        "userid": answer.get("userid", userid),
+        "expires_at": expires_at if has_access_token else 0,
+    }
 
 
 def _usable(tokens):
     """Whether the stored access token can be sent, with the 5-minute buffer."""
-    return bool(tokens.get("access_token")) and time.time() < _expires_at(tokens) - 300
+    return is_token(tokens.get("access_token")) and time.time() < token_expiry(tokens) - 300
 
 
 def _reread_tokens():
@@ -252,7 +288,7 @@ def _replaced_by_a_later_grant(on_disk, tokens):
     rotates the refresh token, so the one just issued is known to be live and
     another copy's usually is not: saving over that copy is what keeps it.
     """
-    return _expires_at(on_disk) > _expires_at(tokens) and _usable(on_disk)
+    return token_expiry(on_disk) > token_expiry(tokens) and _usable(on_disk)
 
 
 def _current_tokens():
@@ -330,7 +366,7 @@ def _refresh_token() -> str:
     if _usable(tokens):
         return tokens["access_token"]
 
-    if not tokens.get("refresh_token"):
+    if not is_token(tokens.get("refresh_token")):
         logger.error("Token expired and no refresh token. Run: withings-mcp auth")
         raise TokenRefused("Token expired and no refresh token. Run: withings-mcp auth")
 
@@ -389,19 +425,18 @@ def _refresh_token() -> str:
     if status != 0:
         if status in _REFUSAL_STATUSES:
             return _answer_refusal(tokens, file_token, None, f"status {status}")
-        logger.error("Token refresh returned status %s", status)
+        # Same rule as api.py: the status came from the response body.
+        if isinstance(status, int) and not isinstance(status, bool):
+            logger.error("Token refresh returned status %s", status)
+        else:
+            logger.error("Token refresh returned an unrecognised status")
         raise RefreshNetworkError("Withings could not complete the refresh.")
 
     new_tokens = body.get("body")
-    if not isinstance(new_tokens, dict):
+    if not _carries_a_token(new_tokens):
         logger.error("Token refresh returned no token payload")
-        raise TokenRefused("Token refresh failed. Run: withings-mcp auth")
-    refreshed = {
-        "access_token": new_tokens["access_token"],
-        "refresh_token": new_tokens.get("refresh_token", tokens["refresh_token"]),
-        "userid": new_tokens.get("userid", tokens.get("userid")),
-        "expires_at": time.time() + new_tokens.get("expires_in", 10800),
-    }
+        raise RefreshNetworkError("Withings returned no token.")
+    refreshed = _grant_from(new_tokens, tokens["refresh_token"], tokens.get("userid"))
 
     # A grant `auth` saved during the request is newer than this one, so it
     # wins. Anything else is saved over: this package's writes replace the
@@ -416,6 +451,9 @@ def _refresh_token() -> str:
     # Keyed to what the file holds now, which may have changed during the
     # request: that is what the next call compares against.
     _save(refreshed, on_disk.get("refresh_token") if on_disk is not None else file_token)
+    if not refreshed["access_token"]:
+        logger.error("Token refresh returned a refresh token and no access token")
+        raise RefreshNetworkError("Withings returned no token.")
     return refreshed["access_token"]
 
 
@@ -423,12 +461,12 @@ def refresh_token() -> str:
     """Return a valid access token, refreshing if expired.
 
     The boundary that classifies every way obtaining a token can fail. Only
-    TokenRefused means the credentials were rejected; everything else becomes
-    RefreshNetworkError, by construction rather than by listing the exception
-    types that happen to occur. A list misses the type nobody thought of, such
-    as the KeyError from a token payload with no access_token. A missed type
-    would escape api.post and go past run_sync's handlers, leaving no sync_log
-    row.
+    TokenRefused means the server or the credential files judged the credentials
+    unusable; everything else becomes RefreshNetworkError, by construction rather
+    than by listing the exception types that happen to occur. A list misses the
+    type nobody thought of, such as the KeyError from a client file with no
+    client_id. A missed type would escape api.post and go past run_sync's
+    handlers, leaving no sync_log row.
 
     A bug inside the refresh therefore reports as a network failure rather
     than a refusal. That is the safe direction: it is still recorded and still
@@ -480,11 +518,10 @@ def setup_auth():
             # through to the prompts rather than reading from the empty result.
             print(f"{WITHINGS_CLIENT_PATH} is unreadable; setting up from scratch.")
 
-    def _filled(value):
-        return isinstance(value, str) and value
-
-    if creds and not (_filled(creds.get("client_id")) and _filled(creds.get("client_secret"))):
-        print(f"{WITHINGS_CLIENT_PATH} is incomplete; setting up from scratch.")
+    if creds and not (is_token(creds.get("client_id")) and is_token(creds.get("client_secret"))):
+        print(
+            f"{WITHINGS_CLIENT_PATH} has no usable client id and secret; setting up from scratch."
+        )
         creds = None
 
     if creds:
@@ -595,12 +632,7 @@ def setup_auth():
         sys.exit(1)
 
     tokens = auth_result["tokens"]
-    token_store = {
-        "access_token": tokens["access_token"],
-        "refresh_token": tokens.get("refresh_token", ""),
-        "userid": tokens.get("userid"),
-        "expires_at": time.time() + tokens.get("expires_in", 10800),
-    }
+    token_store = _grant_from(tokens, "", None)
     _save_or_exit(WITHINGS_TOKENS_PATH, token_store, "tokens")
     print(f"Tokens saved. User ID: {tokens.get('userid')}")
     print("\nSetup complete. Register with Claude Code:")
