@@ -437,7 +437,7 @@ class TestCredentials:
     @skip_as_root
     @skip_non_posix
     def test_a_read_only_token_file_is_not_a_problem(self, setup):
-        """os.replace needs nothing on the file, so this used to fail falsely."""
+        """os.replace needs nothing on the file, so reporting this would be false."""
         config_dir, _ = setup
         _write_client(config_dir)
         path = _write_tokens(config_dir)
@@ -486,8 +486,8 @@ class TestTheCommandItself:
     """run_doctor joins run_checks, format_report and exit_code.
 
     Tested end to end because each of those passing separately says nothing
-    about the command a user runs: gutting run_doctor to `return 0` left the
-    rest of this file green.
+    about the command a user runs: a run_doctor reduced to `return 0` would
+    leave the rest of this file green.
     """
 
     def test_a_broken_setup_prints_findings_and_exits_one(self, setup, capsys):
@@ -746,7 +746,7 @@ class TestOpenFailureIsNotCalledCorruption:
     """A database SQLite cannot open is not a database it found broken.
 
     Reached when a sync holds the write lock, or the file is unreadable in a
-    way the earlier permission check cannot see. Both used to share the
+    way the earlier permission check cannot see. Neither belongs in the
     corruption branch, whose remedy is to delete the cache.
     """
 
@@ -834,12 +834,12 @@ def test_the_diagnostic_agrees_with_what_saving_actually_does(tmp_path, dir_mode
     )
 
     # The check fires when either bit is missing, so naming only one sends
-    # the user to fix a permission the directory already has. Asserting on
-    # the boolean alone let that wording stand through the no-exec-dir case.
+    # the user to fix a permission the directory already has. The boolean
+    # alone would let that wording stand through the no-exec-dir case.
     if findings:
         detail = findings[0].detail
         assert "write and execute" in detail, detail
         # Both bits AND what they are on: blaming the file instead reads
-        # plausibly and is wrong in the same way the original was.
+        # plausibly and is wrong.
         assert "on the directory" in detail, detail
         assert "is not writable by this user" not in detail, detail

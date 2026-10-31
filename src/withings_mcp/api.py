@@ -42,10 +42,10 @@ def post(url: str, params: dict, retries: int = 2) -> dict:
     Returns the 'body' field from the response.
     """
     for attempt in range(retries):
-        # refresh_token reports its documented failures with builtins, which
-        # run_sync does not classify; translated here, at its only call site.
-        # The messages are fixed rather than built from the original, which can
-        # carry a path or file content into the sync log.
+        # refresh_token reports its failures with two classes of its own, which
+        # run_sync does not classify, so they are translated here, at its only
+        # call site. The messages are fixed, so nothing from the original
+        # exception reaches the sync log.
         try:
             token = refresh_token()
         except TokenRefused as e:
@@ -77,14 +77,14 @@ def post(url: str, params: dict, retries: int = 2) -> dict:
             # Wider than URLError: a read timeout or reset arrives bare, a
             # truncated response raises from http.client (not an OSError at
             # all), and an undecodable body raises ValueError. Any of them
-            # escaping here would leave run_sync with no log row and an
-            # unclosed connection.
+            # escaping here would leave run_sync with no log row.
             raise WithingsAPIError("Network error. Check your connection.") from e
 
-        # Parsing is its own failure cause, not a transport one: an intermediary
-        # answering 200 with HTML raises ValueError here, and JSON of the wrong
-        # shape fails at the .get below. Neither is caught above, so both used
-        # to escape run_sync - no log row, and doctor reporting a clean log.
+        # Parsing is its own failure cause, not a transport one. An intermediary
+        # answering 200 with HTML raises ValueError here. JSON of the wrong
+        # shape would fail at the .get below, so it is refused before that.
+        # Either one escaping run_sync would leave no log row, and doctor would
+        # still read the last row written.
         try:
             body = json.loads(raw)
         except ValueError as e:

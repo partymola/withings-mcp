@@ -1,14 +1,11 @@
-"""A filter value nothing can match is refused, not answered with stripped data.
+"""A filter value outside this package's vocabulary is refused, not answered as empty.
 
-`withings_get_body(metrics="no_such_metric")` returned one entry per
-measurement group carrying nothing but a date, which reads as measurements
-that exist and are empty. `withings_get_workouts(category="cycl1ng")` returned
-no workouts, which reads as a period without any.
+An empty answer to `withings_get_body(metrics="no_such_metric")` or
+`withings_get_workouts(category="cycl1ng")` reads as a period without data,
+not as a filter that cannot be used.
 
 Withings defines both vocabularies and this package holds the names, so the
-accepted values are a list it can state. That is the difference from the
-sibling servers, where the provider can name something the code has never
-seen and the cache is the only vocabulary there is.
+accepted values are a list it can state.
 
 The calls go through `mcp.call_tool`, the layer a model reaches, and the
 refusal arrives as a `ToolError` because `require_auth` converts what this
@@ -132,9 +129,9 @@ def test_a_metric_the_cache_has_no_column_for_is_an_empty_answer_not_a_refusal()
 def test_a_group_that_recorded_none_of_the_asked_metrics_is_dropped():
     """The cached row carries every column, so the key is always there.
 
-    A blood-pressure group holds no weight, and testing keys rather than
-    values returned it as `{"date": ..., "weight_kg": null}`, which is the
-    defect this refusal exists to remove wearing a filter.
+    A blood-pressure group holds no weight, and a check on keys rather than
+    values would keep it as `{"date": ..., "weight_kg": null}`: a group with
+    nothing in it, passed off as a measurement.
     """
     blood_pressure = fake_body_db_row(date="2026-01-12", grpid=1002, weight_kg=None)
     raised, data = body(
@@ -173,8 +170,8 @@ def test_a_category_that_matches_a_known_name_still_answers(value):
     """The padded value is the one a guard that normalises privately loses.
 
     Stripping and folding inside the check while handing the raw string to
-    the query accepts this and then matches nothing, which is the empty
-    answer the refusal replaced.
+    the query accepts this and then matches nothing: an empty answer where
+    the value is valid.
     """
     raised, data = workouts({"category": value}, rows=[WORKOUT_ROW])
     assert raised is None, raised
@@ -214,9 +211,7 @@ def test_the_live_path_matches_on_the_same_normalised_value(value):
     """The live path has no cache to fall back on, so its half needs its own pin.
 
     Both call sites take the normalised value, and a test on the cached one
-    cannot see the live one reverting: a mutant handing `_fetch_workouts_live`
-    the raw string again survived the whole suite, because the only live test
-    with a category passed a value normalisation does not change.
+    cannot see the live one handing `_fetch_workouts_live` the raw string.
     """
     session = fake_workout(category=6)  # cycling
     with patch.object(activity_tools.api, "post", return_value={"series": [session]}):
@@ -247,8 +242,8 @@ def documented_values(tool) -> set[str]:
 def test_the_documented_categories_are_the_ones_the_server_can_produce():
     """The docstring is where a model reads the vocabulary before calling.
 
-    A list written by hand beside the constant it restates is the paired fact
-    this repo keeps getting wrong, so it is compared rather than trusted.
+    A list written by hand beside the constant it restates can drift from it,
+    so it is compared rather than trusted.
     """
     assert documented_values(activity_tools.withings_get_workouts) == set(
         helpers.WORKOUT_CATEGORIES.values()
@@ -256,7 +251,7 @@ def test_the_documented_categories_are_the_ones_the_server_can_produce():
 
 
 def test_the_documented_metrics_are_the_ones_the_server_reports():
-    """The same pairing on the other tool, and the list that just changed.
+    """The same pairing on the other tool.
 
     A measure type added to the constant and not to the docstring is accepted
     by the filter and offered to nobody, which nothing else here would see.

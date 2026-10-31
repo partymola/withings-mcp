@@ -798,7 +798,7 @@ class TestExchangeCodeGuards:
         assert error
 
     def test_a_null_inner_body_is_returned_not_raised(self):
-        """The envelope parsed and the payload did not - previously unguarded."""
+        """A null payload is not an object, so the exchange reports it as a failure."""
         body, error = self._exchange(_urlopen_returning_raw(b'{"status": 0, "body": null}'))
         assert body is None
         assert error
@@ -1224,7 +1224,7 @@ class TestTheCallbackPortIsNotShared:
         ), calls
 
     def test_reuse_is_allowed_off_windows_and_refused_on_it(self):
-        """Not asking to share is the fix; the exclusive option is the belt.
+        """On Windows, not asking for reuse is the protection, and exclusive use backs it up.
 
         The runtime value alone cannot see a revert to a bare `True`, because
         that is what this platform is supposed to have, so the source form is
@@ -1288,10 +1288,9 @@ class TestTheCallbackPortIsNotShared:
         assert not bare, bare
 
     def test_a_busy_port_is_reported_before_the_browser_opens(self, monkeypatch, capsys):
-        """A port that is already held is a failure this flow could not have
-        before, so it has to end in advice rather than a traceback - and end
-        there before an authorisation page is opened onto a redirect with
-        nowhere to land."""
+        """A port that is already held has to end in advice rather than a
+        traceback, and end there before an authorisation page is opened onto a
+        redirect with nowhere to land."""
         opened = []
         # _isolate_auth already points the client path at a temp file that does
         # not exist, so the flow goes to the prompts rather than the re-use path.

@@ -108,10 +108,7 @@ class TestApiPost(unittest.TestCase):
 class TestRefreshFailuresBecomeAuthErrors(unittest.TestCase):
     """api.post maps the two types refresh_token guarantees, and nothing else.
 
-    It used to catch a tuple of builtins, so the classification depended on
-    remembering every type auth could raise - which is how a bare OSError, an
-    http.client exception and a decode failure were each graded a dead
-    credential in turn.
+    Its call to refresh_token catches no builtins.
     """
 
     def _post_with_refresh_raising(self, exc):
@@ -187,11 +184,11 @@ class TestNetworkFailureIsNotAnAuthFailure(unittest.TestCase):
 
 
 class TestAgainstTheRealRefresh(unittest.TestCase):
-    """Drive the real auth.refresh_token, so the catch tuple is a fact.
+    """Drive the real auth.refresh_token, so what api.post maps is what auth raises.
 
-    Every other test here injects a side effect, which pins what api.post does
-    with an exception but not that auth actually raises that kind. A broken
-    token file exercised end to end is what proves the two agree.
+    The refresh tests above inject an exception, which pins what happens to it
+    but not that auth actually raises that kind. Running the real auth code
+    against a token file and a mocked urlopen is what proves the two agree.
     """
 
     def setUp(self):
@@ -239,12 +236,12 @@ class TestAgainstTheRealRefresh(unittest.TestCase):
             self._post_with_token_file("{not json")
 
     def test_a_token_file_that_is_not_an_object(self):
-        """Valid JSON of the wrong shape used to fail at an attribute access."""
+        """Valid JSON of the wrong shape is refused, not left to fail at an attribute access."""
         with self.assertRaises(api.WithingsAuthError):
             self._post_with_token_file('["not", "an", "object"]')
 
     def test_a_token_file_with_a_non_numeric_expiry(self):
-        """A hand-edited expires_at used to raise TypeError on the comparison."""
+        """A hand-edited expires_at counts as expired, not as a TypeError on the comparison."""
         with self.assertRaises(api.WithingsAuthError):
             self._post_with_token_file('{"access_token": "a", "expires_at": "soon"}')
 
@@ -336,10 +333,10 @@ class TestAgainstTheRealRefresh(unittest.TestCase):
         self.assertNotIsInstance(caught.exception, api.WithingsAuthError)
 
     def test_a_response_missing_its_body_is_reported_not_raised(self):
-        """Without the guard a KeyError reaches the same exception type.
+        """A missing body is refused by a guard, not left to raise from the indexing below it.
 
         auth is asserted directly so the test discriminates the guard from the
-        accident, rather than passing either way.
+        catch-all, rather than passing either way.
         """
         tokens = '{"access_token": "a", "refresh_token": "r", "expires_at": 0}'
         with self._urlopen_returning(b'{"status": 0}'):
@@ -394,7 +391,7 @@ class TestAgainstTheRealRefresh(unittest.TestCase):
                 self._post_with_token_file(tokens)
 
     def test_a_truncated_response_is_a_network_failure(self):
-        """http.client exceptions are not OSError, so they escaped everything."""
+        """http.client raises this, not an OSError, and it says nothing about the credentials."""
         import http.client
 
         tokens = '{"access_token": "a", "refresh_token": "r", "expires_at": 0}'
@@ -406,7 +403,7 @@ class TestAgainstTheRealRefresh(unittest.TestCase):
         self.assertNotIsInstance(caught.exception, api.WithingsAuthError)
 
     def test_an_undecodable_response_is_a_network_failure(self):
-        """A body that will not decode raises ValueError, which reads as auth."""
+        """A body that will not decode says nothing about the credentials."""
         tokens = '{"access_token": "a", "refresh_token": "r", "expires_at": 0}'
         with self._urlopen_returning(b"\xff\xfe not utf-8 at all"):
             with self.assertRaises(api.WithingsAPIError) as caught:
@@ -442,9 +439,8 @@ class TestAgainstTheRealRefresh(unittest.TestCase):
 class TestTheDataRequestTransport(unittest.TestCase):
     """api.post's own request has the same exposure as the refresh.
 
-    Every other test in this file fails inside refresh_token, so nothing
-    reached this urlopen at all - widening its catch could have been reverted
-    with the suite still green.
+    A URLError is the only failure TestApiPost sends through this urlopen. These
+    are not URLErrors, so they pin the width of the catch around it.
     """
 
     def _post_with_a_working_token(self, urlopen_side_effect):
@@ -472,10 +468,9 @@ class TestTheDataRequestTransport(unittest.TestCase):
 class TestTheDataRequestParses(unittest.TestCase):
     """The data request has its own read and parse, with its own failures.
 
-    Every earlier round enumerated exception types arriving at the refresh
-    boundary, so this site - which reads and parses separately - was never in
-    scope, and a captive portal answering 200 with HTML escaped run_sync
-    entirely: no sync_log row, and doctor reporting a clean log.
+    It sits outside the refresh boundary, so a captive portal answering 200
+    with HTML must be reported here. An escape would go past run_sync's handlers:
+    no sync_log row, and doctor still reading the last row written.
     """
 
     def _post_returning(self, payload):
@@ -509,7 +504,7 @@ class TestTheDataRequestParses(unittest.TestCase):
                 self.assertNotIsInstance(caught.exception, api.WithingsAuthError)
 
     def test_a_null_inner_body_is_not_returned_as_none(self):
-        """An explicit null used to fail at the caller's .get, past run_sync."""
+        """An explicit null is an empty result, not None, which fails at the caller's .get."""
         self.assertEqual(self._post_returning(b'{"status": 0, "body": null}'), {})
 
     def test_an_inner_body_of_the_wrong_shape_is_reported(self):
@@ -581,13 +576,10 @@ class TestTheStatusIsNotQuotedBackUnlessItIsACode(unittest.TestCase):
 
 
 class TestEveryApiMessageIsAConstantOrAGuardedCode(unittest.TestCase):
-    """sync_tools writes str(e) into sync_log and returns it to the model.
+    """sync_tools writes str(e) for auth and API errors to sync_log and to the model.
 
-    That is safe because every message these exceptions carry is a literal -
-    but safe by upstream discipline rather than by construction at the sink,
-    which is the same distinction that let the callback page go unescaped
-    for three rounds. This is the gate: a future f-string anywhere in api.py
-    reopens the class silently otherwise.
+    This walks every `raise Withings*(...)` in api.py. Each positional argument
+    must be a literal, or an f-string that interpolates only `status`.
     """
 
     def test_no_raise_in_the_api_layer_interpolates_freely(self):

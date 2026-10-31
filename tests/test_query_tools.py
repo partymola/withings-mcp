@@ -327,9 +327,8 @@ class TestGetBody:
         assert out["hint"] == "Try live=True to fetch directly from the API."
 
     def test_unknown_metric_filter_is_refused(self, cache):
-        # It used to strip every value and answer with bare dates, which reads
-        # as measurements that exist and hold nothing. What the refusal says,
-        # and the same class on withings_get_workouts, is in
+        # An empty answer would read as a period without data. What the
+        # refusal says, and the same class on withings_get_workouts, is in
         # tests/test_filter_arguments.py.
         cache(db.save_body_measurement, fake_body_db_row(date="2026-01-10", grpid=1001))
         # require_auth has already converted it by the time it escapes the tool.

@@ -289,8 +289,7 @@ def _check_token_file_writability(path: Path) -> list[Finding]:
     needs write and execute on the containing directory and nothing at all on
     the file itself. The caller passes the resolved path for that reason. A
     read-only file in a writable directory saves fine; a writable file in a
-    read-only directory does not. Checking the file - which is what an
-    in-place rewrite would have needed - reported both backwards.
+    read-only directory does not. Checking the file would report both backwards.
     """
     if os.access(path.parent, os.W_OK | os.X_OK):
         return []
@@ -587,12 +586,12 @@ def check_auth_prerequisites() -> list[Finding]:
     """Things that break `withings-mcp auth` itself, checked before it is needed."""
     findings = []
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        # Here SO_REUSEADDR only means "ignore a TIME_WAIT socket left by the
-        # last auth run". Windows reads it as permission to bind over a listener
-        # that asked for reuse itself, and the callback server does, so with it
-        # set the check could never fire against the one holder that matters.
-        # There, without it, a recently closed auth run reads as busy for a few
-        # minutes - on a WARN, the better half of the trade.
+        # Off Windows, SO_REUSEADDR only means "ignore a TIME_WAIT socket left by
+        # the last auth run". Windows reads it as permission to bind over a
+        # listener that asked for reuse itself, so with it set the check would
+        # not fire against such a holder. On Windows, without it, a recently
+        # closed auth run reads as busy for a few minutes. That is only a WARN,
+        # so it is the better half of the trade.
         if sys.platform != "win32":
             probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:

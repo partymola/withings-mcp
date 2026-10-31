@@ -42,9 +42,8 @@ def run_sync(types: list[str], days: int = 30) -> dict:
     try:
         return _run_sync(conn, types, days)
     finally:
-        # Closed in a finally so an exception nobody classified cannot leak the
-        # connection - which is what happened whenever one escaped the handlers
-        # below.
+        # Closed in a finally so an exception the handlers below do not classify
+        # cannot leak the connection.
         conn.close()
 
 

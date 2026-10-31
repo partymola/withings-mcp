@@ -282,10 +282,8 @@ class TestSyncLogRecordsFailures(unittest.TestCase):
     def test_a_revoked_refresh_token_is_logged_rather_than_escaping(self):
         """The commonest way syncing dies, end to end through api.post.
 
-        auth.refresh_token raises a plain RuntimeError; api translates it, and
-        run_sync's existing handler records it. Before that translation the
-        exception left run_sync entirely, so nothing reached sync_log and the
-        connection was never closed.
+        api translates auth's TokenRefused, and run_sync's handler records it.
+        Untranslated, it would go past that handler and leave no sync_log row.
         """
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "withings.db")

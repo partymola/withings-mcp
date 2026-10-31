@@ -57,7 +57,7 @@ class _CallbackServer(HTTPServer):
 
     Deliberate, and not what `HTTPServer` does by default: it asks for address
     reuse, which on Windows is what lets another process bind over this
-    listener and take the code. Not asking is the fix; the exclusive-use
+    listener and take the code. Not asking is what closes it; the exclusive-use
     option is asked for as well. Why each half is there, and what it costs, is
     in AGENTS.md. Pinned by TestTheCallbackPortIsNotShared, which drives this
     method's Windows branch on a POSIX runner.
@@ -75,7 +75,11 @@ class _CallbackServer(HTTPServer):
 
 
 class TokenRefused(WithingsError, RuntimeError):
-    """The server judged the credentials and rejected them.
+    """The credentials are treated as unusable.
+
+    Raised when the server refuses them and when the credential files cannot
+    supply them. Also raised when the server answers status 0 with no token
+    payload, where nothing has judged them.
 
     The only failure that warrants telling the user to re-authorise, which
     rewrites a token file other hosts may share.
@@ -83,12 +87,11 @@ class TokenRefused(WithingsError, RuntimeError):
 
 
 class RefreshNetworkError(WithingsError, RuntimeError):
-    """The refresh request never got an answer.
+    """Every failure to obtain a token that is not a TokenRefused.
 
-    Keeps RuntimeError so existing callers are unaffected, but is
-    distinguishable: an unreachable server says nothing about whether the
-    credentials are still good, and telling the user to re-authorise would
-    rotate a token file another host may own.
+    An unreachable server is one: it says nothing about whether the credentials
+    are still good, and telling the user to re-authorise would rotate a token
+    file another host may own.
     """
 
 
@@ -350,9 +353,10 @@ def _refresh_token() -> str:
     except urllib.error.HTTPError as e:
         # Checked before OSError, which it subclasses. Listed by what the code
         # says about the credentials rather than by range: RFC 6749 refuses a
-        # bad grant with 400/401/403, while 408, 425 and 429 are 4xx that carry
-        # no judgement at all. Answering a rate limit with "re-authorise" turns
-        # a condition that clears itself into a rotated token file.
+        # bad grant with 400 and a bad client with 401, while 403, 408, 425 and
+        # 429 are 4xx that carry no judgement at all. Answering a rate limit
+        # with "re-authorise" turns a condition that clears itself into a
+        # rotated token file.
         if e.code in _REFUSAL_CODES:
             return _answer_refusal(tokens, file_token, e, f"HTTP {e.code}")
         logger.error("Token refresh got HTTP %s from the server", e.code)
@@ -361,8 +365,7 @@ def _refresh_token() -> str:
         # Wider than URLError on three counts: urlopen wraps only connect-phase
         # failures in it, so a read timeout or reset arrives bare; a truncated
         # or malformed response raises from http.client, which is not an
-        # OSError at all; and a body that will not decode raises ValueError,
-        # which the caller would otherwise read as a bad credential.
+        # OSError at all; and a body that will not decode raises ValueError.
         logger.error("Token refresh could not reach the server")
         raise RefreshNetworkError("Could not reach Withings to refresh the token.") from e
 
@@ -422,10 +425,10 @@ def refresh_token() -> str:
     The boundary that classifies every way obtaining a token can fail. Only
     TokenRefused means the credentials were rejected; everything else becomes
     RefreshNetworkError, by construction rather than by listing the exception
-    types that happen to occur. Enumerating them is what went wrong before:
-    each round of fixes found another type nobody had thought of - a bare
-    OSError, an http.client exception that is not an OSError at all, a decode
-    failure that is a ValueError - and each was graded a dead credential.
+    types that happen to occur. A list misses the type nobody thought of, such
+    as the KeyError from a token payload with no access_token. A missed type
+    would escape api.post and go past run_sync's handlers, leaving no sync_log
+    row.
 
     A bug inside the refresh therefore reports as a network failure rather
     than a refusal. That is the safe direction: it is still recorded and still
@@ -558,9 +561,9 @@ def setup_auth():
         )
     )
 
-    # Bind before opening the browser: the listener no longer asks to share the
-    # port, so a busy one is now a real failure, and sending the user to an
-    # authorisation page whose redirect has nowhere to land wastes the attempt.
+    # Bind before opening the browser: a busy port is a real failure, and sending
+    # the user to an authorisation page whose redirect has nowhere to land wastes
+    # the attempt.
     try:
         server = _CallbackServer(("localhost", WITHINGS_CALLBACK_PORT), CallbackHandler)
     except OSError:
