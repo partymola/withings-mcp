@@ -245,9 +245,10 @@ def _expiry_after(expires_in):
     return expires_at if math.isfinite(expires_at) else 0
 
 
-def _grant_from(answer, refresh_token, userid):
-    """What to save for a success answer, given what to keep where it has none.
+def _grant_from(answer, refresh_token):
+    """What to save for a success answer, given the refresh token to keep where it has none.
 
+    Only these fields, each checked here: nothing reads anything else in a reply.
     An access token that cannot be used is stored empty and expired, so a
     refresh token delivered with it still reaches the file. An unusable lifetime
     counts as already expired only where a refresh token can replace the grant;
@@ -262,7 +263,6 @@ def _grant_from(answer, refresh_token, userid):
     return {
         "access_token": answer["access_token"] if has_access_token else "",
         "refresh_token": kept_refresh,
-        "userid": answer.get("userid", userid),
         "expires_at": expires_at if has_access_token else 0,
     }
 
@@ -439,7 +439,7 @@ def _refresh_token() -> str:
     if not _carries_a_token(new_tokens):
         logger.error("Token refresh returned no token payload")
         raise RefreshNetworkError("Withings returned no token.")
-    refreshed = _grant_from(new_tokens, tokens["refresh_token"], tokens.get("userid"))
+    refreshed = _grant_from(new_tokens, tokens["refresh_token"])
 
     # A grant `auth` saved during the request is newer than this one, so it
     # wins. Anything else is saved over: this package's writes replace the
@@ -635,9 +635,9 @@ def setup_auth():
         sys.exit(1)
 
     tokens = auth_result["tokens"]
-    token_store = _grant_from(tokens, "", None)
+    token_store = _grant_from(tokens, "")
     _save_or_exit(WITHINGS_TOKENS_PATH, token_store, "tokens")
-    print(f"Tokens saved. User ID: {tokens.get('userid')}")
+    print("Tokens saved.")
     print("\nSetup complete. Register with Claude Code:")
     command = sys.executable.replace("/bin/python", "/bin/withings-mcp")
     print(f"  claude mcp add -s user withings -- {command}")

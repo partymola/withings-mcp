@@ -160,7 +160,6 @@ class TestRefreshToken:
         stored = _stored()
         assert stored["access_token"] == "tok-new"
         assert stored["refresh_token"] == "ref-new"
-        assert stored["userid"] == 99
         # expires_at is stamped from the frozen clock plus expires_in.
         assert stored["expires_at"] == _NOW + 10800
         # The outgoing grant carries the refresh_token flow with the old token.
@@ -198,7 +197,29 @@ class TestRefreshToken:
         with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", opener):
             auth.refresh_token()
         assert _stored()["refresh_token"] == "ref-keep"
-        assert _stored()["userid"] == 7  # old userid preserved too
+
+    def test_a_reply_saves_only_what_was_checked(self):
+        """Nothing reads anything else in a reply, and nothing checks it. A file
+        written by an older version loses what it held at the next save."""
+        _write(_tokens(expires_at=_NOW - 1))
+        body = {
+            "access_token": "tok-new",
+            "refresh_token": "ref-new",
+            "expires_in": 10800,
+            "expires_at": "MARKER",
+            "userid": "MARKER",
+            "token_type": "MARKER",
+            "scope": "MARKER",
+            "csrf_token": {"MARKER": "MARKER"},
+        }
+        opener = _urlopen_returning({"status": 0, "body": body})
+        with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", opener):
+            auth.refresh_token()
+        assert _stored() == {
+            "access_token": "tok-new",
+            "refresh_token": "ref-new",
+            "expires_at": _NOW + 10800,
+        }
 
     @pytest.mark.parametrize(
         "unusable",
@@ -297,7 +318,6 @@ class TestRefreshToken:
             assert _stored() == {
                 "access_token": "",
                 "refresh_token": "ref-new",
-                "userid": 7,
                 "expires_at": 0,
             }
             assert auth.refresh_token() == "tok-2"
@@ -1916,7 +1936,6 @@ class TestTheAnswerToACodeExchange:
         assert _stored() == {
             "access_token": "",
             "refresh_token": "ref-x",
-            "userid": None,
             "expires_at": 0,
         }
 
@@ -1943,9 +1962,31 @@ class TestTheAnswerToACodeExchange:
         assert _stored() == {
             "access_token": "tok-x",
             "refresh_token": stored_refresh,
-            "userid": 3,
             "expires_at": _NOW + 60,
         }
+
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            {"userid": "\ud800"},
+            {"userid": "\u001b]0;x\u0007"},
+            {"userid": "MARKER"},
+            {"userid": 12345},
+            {},
+        ],
+        ids=["surrogate", "terminal-escape", "text", "number", "absent"],
+    )
+    def test_a_sign_in_finishes_without_repeating_the_user_id(self, reply, monkeypatch, capsys):
+        """The code is spent by now, and the value is unchecked: it must neither
+        stop the registration command printing nor reach the terminal."""
+        answer = {"access_token": "tok-x", "refresh_token": "ref-x", **reply}
+        self._authorise(answer, monkeypatch)
+        out = capsys.readouterr().out
+        assert "Tokens saved." in out
+        assert "Setup complete" in out
+        assert "claude mcp add" in out
+        assert "User ID" not in out
+        assert str(reply.get("userid", "MARKER")) not in out
 
     def test_an_answer_holding_every_legal_character_class_is_saved(self, monkeypatch):
         answer = {"access_token": "tok.a-b_c~d/e+f= g", "refresh_token": "ref.h-i_j~k/l+m="}

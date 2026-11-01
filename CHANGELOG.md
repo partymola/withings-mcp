@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `withings-mcp doctor` no longer advises `withings-mcp auth` when the next request refreshes anyway. That covers a token file with a refresh token and no access token. It also covers an expiry that is absent, not a number or beyond float range. An access token that cannot be used is no longer called valid. One case keeps the advice: a usable access token whose expiry is too far ahead to be a date. No refresh runs for it.
 - A refresh that starts from a malformed access token no longer saves over a grant `withings-mcp auth` saved meanwhile. The stored expiry could be later than the new grant's, which hid it.
 - A response or credential file nested too deeply to parse now counts as unreadable, like any other. It ended in an uncaught error from `withings-mcp auth` and from data requests.
+- The token file no longer stores `userid`. It came from the reply unchecked, and nothing read it. `withings-mcp auth` no longer prints it either. A malformed value could end in a traceback after the authorisation code was spent. It could also put control characters on your terminal.
 - A token refresh no longer writes a response status to the log unless it is an integer. A refusal code sent as a float, such as `401.0`, is still logged. A list or object status is reported as unrecognised, not as a `TypeError`.
 
 ## [0.8.0] - 2026-09-06
