@@ -87,7 +87,7 @@ def post(url: str, params: dict, retries: int = 2) -> dict:
         # still read the last row written.
         try:
             body = json.loads(raw)
-        except ValueError as e:
+        except (ValueError, RecursionError) as e:
             raise WithingsAPIError("Withings returned an unreadable response.") from e
 
         if not isinstance(body, dict):

@@ -4,6 +4,9 @@ ALL test data in this project MUST come from this module.
 Values are obviously fictional round numbers - never use real health data.
 """
 
+# Unclosed, so it raises at the parse and nothing holds a deep value afterwards.
+DEEP_JSON = "[" * 200_000
+
 
 def _encode_value(value, decimals=1):
     """Encode a float as Withings value + unit (value * 10^unit)."""

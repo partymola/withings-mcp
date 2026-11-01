@@ -22,6 +22,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tests.fixtures import DEEP_JSON
 from withings_mcp import auth, config, db, doctor
 
 FAKE_CLIENT_SECRET = "not-a-real-secret-0000"
@@ -372,6 +373,24 @@ class TestCredentials:
 
     def test_missing_client_file_fails(self, setup):
         assert doctor.FAIL in _severities(doctor.check_credentials(), "app config")
+
+    @pytest.mark.parametrize(
+        "file_name, finding",
+        [("withings_client.json", "app config"), ("withings_tokens.json", "credentials")],
+        ids=["client-file", "token-file"],
+    )
+    def test_a_credential_file_nested_too_deeply_is_reported_as_unreadable(
+        self, setup, file_name, finding
+    ):
+        """It raises RecursionError at the parse, which is not a ValueError, and
+        "this check could not run, please report a bug" is the wrong answer."""
+        config_dir, _ = setup
+        _write_client(config_dir)
+        _write_tokens(config_dir)
+        (config_dir / file_name).write_text(DEEP_JSON)
+        findings = doctor.check_credentials()
+        assert _severities(findings, finding) == {doctor.FAIL}
+        assert "unreadable or malformed" in _named(findings, finding)[0].detail
 
     def test_client_file_without_secret_fails(self, setup):
         config_dir, _ = setup

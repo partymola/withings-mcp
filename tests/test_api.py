@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 from urllib.parse import parse_qs
 
-from tests.fixtures import fake_api_response
+from tests.fixtures import DEEP_JSON, fake_api_response
 from withings_mcp import api, auth
 from withings_mcp.api import (
     WithingsAPIError,
@@ -439,6 +439,14 @@ class TestAgainstTheRealRefresh(unittest.TestCase):
                 self._post_with_token_file(tokens)
         self.assertNotIsInstance(caught.exception, api.WithingsAuthError)
 
+    def test_a_response_nested_too_deeply_is_a_network_failure(self):
+        """It raises RecursionError at the parse, which is not a ValueError."""
+        tokens = '{"access_token": "a", "refresh_token": "r", "expires_at": 0}'
+        with self._urlopen_returning(DEEP_JSON.encode()):
+            with self.assertRaises(api.WithingsAPIError) as caught:
+                self._post_with_token_file(tokens)
+        self.assertNotIsInstance(caught.exception, api.WithingsAuthError)
+
     def test_an_undecodable_response_is_a_network_failure(self):
         """A body that will not decode says nothing about the credentials."""
         tokens = '{"access_token": "a", "refresh_token": "r", "expires_at": 0}'
@@ -528,6 +536,12 @@ class TestTheDataRequestParses(unittest.TestCase):
     def test_a_body_of_the_wrong_shape_is_reported(self):
         with self.assertRaises(api.WithingsAPIError):
             self._post_returning(b'["not", "an", "object"]')
+
+    def test_a_body_nested_too_deeply_is_reported(self):
+        """It raises RecursionError at the parse, which is not a ValueError."""
+        with self.assertRaises(api.WithingsAPIError) as caught:
+            self._post_returning(DEEP_JSON.encode())
+        self.assertEqual(str(caught.exception), "Withings returned an unreadable response.")
 
     def test_an_undecodable_body_is_reported(self):
         with self.assertRaises(api.WithingsAPIError):

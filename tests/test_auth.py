@@ -24,6 +24,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 import pytest
 
+from tests.fixtures import DEEP_JSON
 from withings_mcp import auth
 
 
@@ -477,6 +478,31 @@ class TestRefreshToken:
             assert auth.refresh_token() == "tok-new"
         assert _stored()["expires_at"] == _NOW + 10800
 
+    def test_a_response_nested_too_deeply_is_unreadable_and_writes_nothing(self):
+        """It raises RecursionError at the parse, which is not a ValueError."""
+        stored = _tokens(expires_at=_NOW - 1)
+        _write(stored)
+        opener = _urlopen_returning_raw(DEEP_JSON.encode())
+        with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", opener):
+            with pytest.raises(auth.RefreshNetworkError) as caught:
+                auth.refresh_token()
+        assert str(caught.value) == "Withings returned an unreadable response."
+        assert _stored() == stored
+
+    @pytest.mark.parametrize("name", ["WITHINGS_TOKENS_PATH", "WITHINGS_CLIENT_PATH"])
+    def test_a_credential_file_nested_too_deeply_is_unreadable(self, name):
+        """A refusal, as any other unreadable credential file is, with nothing sent."""
+        _write(_tokens(expires_at=_NOW - 1))
+        path = getattr(auth, name)
+        _refuse_unless_isolated(path)
+        path.write_text(DEEP_JSON)
+        opener = Mock()
+        with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", opener):
+            with pytest.raises(auth.TokenRefused) as caught:
+                auth.refresh_token()
+        assert "missing or unreadable" in str(caught.value)
+        opener.assert_not_called()
+
     def test_a_valid_token_does_not_need_the_client_file(self):
         """Only a refresh uses it, so a moment when it cannot be read must not
         refuse a token that needs no refresh."""
@@ -575,6 +601,13 @@ def test_the_credential_writer_refuses_outside_the_isolated_directory(monkeypatc
     monkeypatch.setitem(_ISOLATED, "root", None)
     with pytest.raises(pytest.fail.Exception, match="refusing to write"):
         _refuse_unless_isolated(auth.WITHINGS_TOKENS_PATH)
+
+
+def test_the_deep_fixture_raises_recursion_error_at_the_parse():
+    """A parser accepting this depth raises ValueError at the unclosed end instead,
+    and the deep tests would all pass while proving nothing about RecursionError."""
+    with pytest.raises(RecursionError):
+        json.loads(DEEP_JSON)
 
 
 def _stored():
@@ -714,6 +747,20 @@ class TestTheTokenFileIsTheOnlyCopy:
         than half-written, and the rotated refresh token must still land."""
         _write(_tokens(expires_at=_NOW - 1))
         urlopen = self._urlopen_writing({"status": 0, "body": self._REFRESHED}, delete=True)
+        with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", urlopen):
+            assert auth.refresh_token() == "tok-new"
+        assert _stored()["refresh_token"] == "ref-new"
+
+    def test_a_refresh_saves_when_the_file_has_become_too_deep_to_read(self):
+        """The second read has to report an unreadable file as the first does,
+        or the catch-all takes the call and the rotated refresh token is lost."""
+        _write(_tokens(expires_at=_NOW - 1))
+
+        def urlopen(request, timeout=None):
+            _refuse_unless_isolated(auth.WITHINGS_TOKENS_PATH)
+            auth.WITHINGS_TOKENS_PATH.write_text(DEEP_JSON)
+            return _urlopen_returning({"status": 0, "body": self._REFRESHED})()
+
         with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", urlopen):
             assert auth.refresh_token() == "tok-new"
         assert _stored()["refresh_token"] == "ref-new"
@@ -1239,6 +1286,12 @@ class TestExchangeCodeGuards:
         assert body is None
         assert "unreadable" in error
 
+    def test_a_response_nested_too_deeply_is_returned_not_raised(self):
+        """It raises RecursionError at the parse, which is not a ValueError."""
+        body, error = self._exchange(_urlopen_returning_raw(DEEP_JSON.encode()))
+        assert body is None
+        assert "unreadable" in error
+
     def test_a_response_of_the_wrong_shape_is_returned_not_raised(self):
         body, error = self._exchange(_urlopen_returning_raw(b'["not", "an", "object"]'))
         assert body is None
@@ -1586,6 +1639,7 @@ class TestSetupAuthSurvivesABrokenClientFile:
             '{"client_id": "   ", "client_secret": "x"}',
             '{"client_id": "a\\nb", "client_secret": "x"}',
             '{"client_id": "abc", "client_secret": "töken"}',
+            DEEP_JSON,
         ],
         ids=[
             "absent",
@@ -1599,6 +1653,7 @@ class TestSetupAuthSurvivesABrokenClientFile:
             "id-whitespace",
             "id-newline",
             "secret-non-ascii",
+            "nested-too-deeply",
         ],
     )
     def test_it_reaches_the_prompts_rather_than_raising(self, contents, tmp_path, monkeypatch):

@@ -170,7 +170,7 @@ def _load_json(path):
     """
     try:
         data = json.loads(path.read_text())
-    except (OSError, ValueError) as e:
+    except (OSError, ValueError, RecursionError) as e:
         raise TokenRefused(f"{path.name} is missing or unreadable. Run: withings-mcp auth") from e
     if not isinstance(data, dict):
         raise TokenRefused(f"{path.name} is malformed. Run: withings-mcp auth")
@@ -204,7 +204,7 @@ def _exchange_code(code, client_id, client_secret):
 
     try:
         body = json.loads(raw)
-    except ValueError:
+    except (ValueError, RecursionError):
         return None, "Token exchange failed (unreadable response)"
 
     if not isinstance(body, dict):
@@ -410,7 +410,7 @@ def _refresh_token() -> str:
 
     try:
         body = json.loads(raw)
-    except ValueError as e:
+    except (ValueError, RecursionError) as e:
         # A proxy or captive portal answering 200 with HTML is a network
         # condition, not a rejected credential.
         logger.error("Token refresh got a response that is not JSON")
