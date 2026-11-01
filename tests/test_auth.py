@@ -762,6 +762,17 @@ class TestTheTokenFileIsTheOnlyCopy:
             assert auth.refresh_token() == "tok-new"
         assert _stored()["refresh_token"] == "ref-new"
 
+    def test_a_grant_saved_with_no_usable_expiry_during_a_refresh_is_overwritten(self):
+        """Not closed, and AGENTS.md says so: it cannot be told from an older copy."""
+        _write(_tokens(expires_at=_NOW - 1))
+        urlopen = self._urlopen_writing(
+            {"status": 0, "body": self._REFRESHED},
+            _tokens(access="tok-auth", refresh="ref-auth", expires_at=0),
+        )
+        with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", urlopen):
+            assert auth.refresh_token() == "tok-new"
+        assert _stored()["refresh_token"] == "ref-new"
+
     def test_a_refresh_saves_when_the_file_has_gone(self):
         """Writes are atomic, so an unreadable file is gone or corrupt rather
         than half-written, and the rotated refresh token must still land."""
@@ -1987,6 +1998,19 @@ class TestTheAnswerToACodeExchange:
         assert "claude mcp add" in out
         assert "User ID" not in out
         assert str(reply.get("userid", "MARKER")) not in out
+
+    def test_an_access_only_sign_in_inside_the_refresh_buffer_is_refused_by_the_next_call(
+        self, monkeypatch, capsys
+    ):
+        """Not closed, and AGENTS.md says so: the lifetime is usable, so it is
+        kept, and it is too short to send with nothing to refresh from."""
+        self._authorise({"access_token": "tok-x", "expires_in": 60}, monkeypatch)
+        assert "Setup complete" in capsys.readouterr().out
+        opener = Mock()
+        with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", opener):
+            with pytest.raises(auth.TokenRefused):
+                auth.refresh_token()
+        opener.assert_not_called()
 
     def test_an_answer_holding_every_legal_character_class_is_saved(self, monkeypatch):
         answer = {"access_token": "tok.a-b_c~d/e+f= g", "refresh_token": "ref.h-i_j~k/l+m="}
