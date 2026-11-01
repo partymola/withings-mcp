@@ -669,6 +669,22 @@ class TestTheTokenFileIsTheOnlyCopy:
             assert auth.refresh_token() == "tok-auth"
         assert (_stored()["access_token"], _stored()["refresh_token"]) == ("tok-auth", "ref-auth")
 
+    @pytest.mark.parametrize(
+        "access",
+        ["", "   ", 12345, "a\nb", "töken"],
+        ids=["blank", "whitespace", "number", "newline", "non-ascii"],
+    )
+    def test_a_grant_saved_during_a_refresh_from_an_unusable_token_is_not_overwritten(self, access):
+        """An unusable access token is refreshed whatever its expiry says, so
+        that expiry can be later than the grant `auth` saves during the request.
+        Measured against it, the user's new grant is saved over."""
+        _write(_tokens(access=access, expires_at=_NOW + 20_000))
+        later = _tokens(access="tok-auth", refresh="ref-auth", expires_at=_NOW + 5000)
+        urlopen = self._urlopen_writing({"status": 0, "body": self._REFRESHED}, later)
+        with _frozen_time(), patch("withings_mcp.auth.urllib.request.urlopen", urlopen):
+            assert auth.refresh_token() == "tok-auth"
+        assert _stored() == later
+
     def test_a_refresh_saves_over_an_older_copy(self):
         """The refresh token just issued is the only live one, since Withings
         rotates it; an older copy holds one that no longer works."""

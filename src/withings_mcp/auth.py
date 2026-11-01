@@ -286,9 +286,12 @@ def _replaced_by_a_later_grant(on_disk, tokens):
     Usable is what decides; later guards a clock that steps back during the
     request, which would otherwise make the untouched file look new. Withings
     rotates the refresh token, so the one just issued is known to be live and
-    another copy's usually is not: saving over that copy is what keeps it.
+    another copy's usually is not: saving over that copy is what keeps it. An
+    access token that could not be used is refreshed whatever its expiry says,
+    so that expiry sets no baseline.
     """
-    return token_expiry(on_disk) > token_expiry(tokens) and _usable(on_disk)
+    baseline = token_expiry(tokens) if is_token(tokens.get("access_token")) else 0
+    return token_expiry(on_disk) > baseline and _usable(on_disk)
 
 
 def _current_tokens():
