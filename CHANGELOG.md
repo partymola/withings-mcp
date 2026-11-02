@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.9.0] - 2026-11-02
 
 ### Fixed
 
@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A response or credential file nested too deeply to parse now counts as unreadable, like any other. It ended in an uncaught error from `withings-mcp auth` and from data requests.
 - The token file no longer stores `userid`. It came from the reply unchecked, and nothing read it. `withings-mcp auth` no longer prints it either. A malformed value could end in a traceback after the authorisation code was spent. It could also put control characters on your terminal.
 - A token refresh no longer writes a response status to the log unless it is an integer. A refusal code sent as a float, such as `401.0`, is still logged. A list or object status is reported as unrecognised, not as a `TypeError`.
+
+### Changed
+
+- `mcp` 2.3.0, up from 2.1.1.
 
 ## [0.8.0] - 2026-09-06
 
@@ -145,7 +149,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ECG and AFib detection support via `withings_get_heart` (live, not cached).
 - Pre-commit hook (`scripts/check-no-data.sh`) blocking commit of databases, tokens, and other secrets.
 
-[Unreleased]: https://github.com/partymola/withings-mcp/compare/v0.8.0...HEAD
+[0.9.0]: https://github.com/partymola/withings-mcp/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/partymola/withings-mcp/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/partymola/withings-mcp/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/partymola/withings-mcp/compare/v0.5.0...v0.6.0
