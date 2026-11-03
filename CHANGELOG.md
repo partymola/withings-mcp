@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Packaging
+
+- The container image is built on Python 3.15 instead of 3.14. Python 3.15 joins the CI matrix and the supported-version classifiers. `requires-python` is unchanged at `>=3.13`.
+
 ## [0.9.0] - 2026-11-02
 
 ### Fixed
@@ -149,6 +155,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ECG and AFib detection support via `withings_get_heart` (live, not cached).
 - Pre-commit hook (`scripts/check-no-data.sh`) blocking commit of databases, tokens, and other secrets.
 
+[Unreleased]: https://github.com/partymola/withings-mcp/compare/v0.9.0...HEAD
 [0.9.0]: https://github.com/partymola/withings-mcp/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/partymola/withings-mcp/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/partymola/withings-mcp/compare/v0.6.0...v0.7.0
