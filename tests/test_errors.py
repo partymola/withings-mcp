@@ -157,6 +157,28 @@ class TestWhichErrorsAreExplainedToTheModel:
 
     @patch("withings_mcp.helpers.WITHINGS_CLIENT_PATH")
     @patch("withings_mcp.helpers.WITHINGS_TOKENS_PATH")
+    def test_a_bad_compare_period_is_refused_before_any_sync(
+        self, tokens_path, client_path, monkeypatch
+    ):
+        client_path.exists.return_value = True
+        tokens_path.exists.return_value = True
+
+        from withings_mcp import db
+        from withings_mcp.tools import analysis_tools
+
+        def _refuse(*args, **kwargs):
+            pytest.fail("the tool reached past the compare periods")
+
+        monkeypatch.setattr(analysis_tools, "auto_sync_if_stale", _refuse)
+        monkeypatch.setattr(db, "get_db", _refuse)
+
+        with pytest.raises(ToolError) as excinfo:
+            asyncio.run(analysis_tools.withings_trends(compare="2026-13 vs 2026-02"))
+
+        assert "Cannot parse period '2026-13'" in str(excinfo.value)
+
+    @patch("withings_mcp.helpers.WITHINGS_CLIENT_PATH")
+    @patch("withings_mcp.helpers.WITHINGS_TOKENS_PATH")
     def test_a_missing_credential_still_answers_rather_than_raising(self, tokens_path, client_path):
         # The gate returns JSON and must not become a ToolError with the rest:
         # a caller with no credentials gets an answer, not a failed call.

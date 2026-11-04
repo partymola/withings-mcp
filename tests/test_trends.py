@@ -1,6 +1,7 @@
 """Tests for trend analysis: aggregation, comparison, sparse data."""
 
 import unittest
+from datetime import date, timedelta
 
 from withings_mcp.db import (
     get_db,
@@ -8,8 +9,10 @@ from withings_mcp.db import (
     save_body_measurement,
     save_sleep_summary,
 )
+from withings_mcp.errors import InvalidDateError
 from withings_mcp.tools.analysis_tools import (
     _compare_periods,
+    _compare_ranges,
     _get_period_key,
     _trend_activity,
     _trend_body,
@@ -201,16 +204,61 @@ class TestComparePeriods(unittest.TestCase):
         save_body_measurement(conn, _body_row("2026-03-15", 5002, weight=69.0))
         conn.commit()
 
-        result = _compare_periods(conn, "body", "2026-03 vs 2026-02")
-        self.assertIn("period_1", result)
-        self.assertIn("period_2", result)
+        result = _compare_periods(conn, "body", _compare_ranges("2026-03 vs 2026-02"))
+        self.assertEqual(result["period_1"]["period"], "2026-03-01 to 2026-03-31")
+        self.assertEqual(result["period_2"]["period"], "2026-02-01 to 2026-02-28")
         self.assertAlmostEqual(result["period_1"]["avg_weight"], 69.0)
         self.assertAlmostEqual(result["period_2"]["avg_weight"], 71.0)
 
     def test_invalid_format(self):
-        conn = _get_test_db()
-        result = _compare_periods(conn, "body", "invalid string")
-        self.assertIn("error", result)
+        with self.assertRaises(InvalidDateError) as caught:
+            _compare_ranges("invalid string")
+        self.assertIn("last_30d vs previous_30d", str(caught.exception))
+
+    def test_each_form_covers_its_whole_span(self):
+        today = date.today()
+        days = timedelta(days=1)
+        for compare, spans in (
+            (
+                "2026-03 vs 2026-02",
+                [(date(2026, 3, 1), date(2026, 3, 31)), (date(2026, 2, 1), date(2026, 2, 28))],
+            ),
+            (
+                "2026-Q4 vs 2026-Q1",
+                [(date(2026, 10, 1), date(2026, 12, 31)), (date(2026, 1, 1), date(2026, 3, 31))],
+            ),
+            (
+                "last_30d vs previous_30d",
+                [(today - 29 * days, today), (today - 59 * days, today - 30 * days)],
+            ),
+            ("last_1d vs previous_1d", [(today, today), (today - days, today - days)]),
+        ):
+            with self.subTest(compare=compare):
+                self.assertEqual(_compare_ranges(compare), spans)
+
+    def test_a_period_that_names_no_dates_is_refused_by_name(self):
+        # A month of 13 or a count past year 1 raised, which reaches the
+        # caller masked; a zero or a trailing suffix answered as if valid,
+        # last_0d with a range ending before it starts.
+        for compare, bad in (
+            ("2026-13 vs 2026-02", "2026-13"),
+            ("2026-02 vs 2026-00", "2026-00"),
+            ("last_99999999d vs previous_30d", "last_99999999d"),
+            ("previous_99999999d vs last_30d", "previous_99999999d"),
+            ("last_0d vs previous_30d", "last_0d"),
+            ("last_30d vs previous_0d", "previous_0d"),
+            ("last_30dx vs previous_30d", "last_30dx"),
+            ("2026-02x vs 2026-03", "2026-02x"),
+            ("last_30d vs 2026-Q1x", "2026-Q1x"),
+        ):
+            with self.subTest(compare=compare):
+                with self.assertRaises(InvalidDateError) as caught:
+                    _compare_ranges(compare)
+                self.assertEqual(
+                    str(caught.exception),
+                    f"Cannot parse period '{bad}'. "
+                    "Use: last_30d, previous_30d, 2026-03, or 2026-Q1",
+                )
 
 
 if __name__ == "__main__":

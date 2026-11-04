@@ -1,5 +1,6 @@
 """Trend analysis tool - works from local cache only."""
 
+import calendar
 import logging
 import re
 from collections import defaultdict
@@ -9,6 +10,7 @@ from typing import Literal
 import anyio
 
 from .. import db
+from ..errors import InvalidDateError
 from ..helpers import format_duration, format_response, parse_date, require_auth
 from ..mcp_instance import mcp
 from .sync_tools import auto_sync_if_stale
@@ -178,60 +180,51 @@ TrendType = Literal[*_TREND_FNS]
 TrendPeriod = Literal["weekly", "monthly", "quarterly"]
 
 
-def _compare_periods(conn, data_type: TrendType, compare_str: str) -> dict:
-    """Compare two time periods. Format: 'last_30d vs previous_30d'."""
-    # Parse the comparison string
+def _compare_ranges(compare_str: str) -> list[tuple[date, date]]:
+    """The two spans of 'last_30d vs previous_30d', or InvalidDateError."""
     parts = re.split(r"\s+vs\s+", compare_str.strip(), maxsplit=1)
     if len(parts) != 2:
-        return {
-            "error": (
-                "Invalid compare format. Use: 'last_30d vs previous_30d' or '2026-03 vs 2026-02'"
-            )
-        }
+        raise InvalidDateError(
+            "Invalid compare format. Use: 'last_30d vs previous_30d' or '2026-03 vs 2026-02'"
+        )
 
     today = date.today()
     ranges = []
     for part in parts:
         part = part.strip()
-        m = re.match(r"last_(\d+)d", part)
-        if m:
-            days = int(m.group(1))
-            ranges.append((today - timedelta(days=days - 1), today))
-            continue
-        m = re.match(r"previous_(\d+)d", part)
-        if m:
-            days = int(m.group(1))
-            ranges.append((today - timedelta(days=days * 2 - 1), today - timedelta(days=days)))
-            continue
-        if re.match(r"^\d{4}-\d{2}$", part):
-            year, month = int(part[:4]), int(part[5:7])
-            start = date(year, month, 1)
-            if month == 12:
-                end = date(year + 1, 1, 1) - timedelta(days=1)
-            else:
-                end = date(year, month + 1, 1) - timedelta(days=1)
-            ranges.append((start, end))
-            continue
-        m = re.match(r"^(\d{4})-Q([1-4])$", part)
-        if m:
-            year, q = int(m.group(1)), int(m.group(2))
-            start = date(year, (q - 1) * 3 + 1, 1)
-            end_month = q * 3
-            if end_month == 12:
-                end = date(year + 1, 1, 1) - timedelta(days=1)
-            else:
-                end = date(year, end_month + 1, 1) - timedelta(days=1)
-            ranges.append((start, end))
-            continue
-        return {
-            "error": (
+        span = None
+        # A month of 13 or a count of days past year 1 matches the pattern and
+        # raises, which reaches the caller masked.
+        try:
+            if m := re.fullmatch(r"(last|previous)_(\d+)d", part):
+                days = int(m.group(2))
+                if days > 0:
+                    end = today if m.group(1) == "last" else today - timedelta(days=days)
+                    span = (end - timedelta(days=days - 1), end)
+            elif re.fullmatch(r"\d{4}-\d{2}", part):
+                year, month = int(part[:4]), int(part[5:7])
+                span = (
+                    date(year, month, 1),
+                    date(year, month, calendar.monthrange(year, month)[1]),
+                )
+            elif m := re.fullmatch(r"(\d{4})-Q([1-4])", part):
+                year, q = int(m.group(1)), int(m.group(2))
+                span = (
+                    date(year, q * 3 - 2, 1),
+                    date(year, q * 3, calendar.monthrange(year, q * 3)[1]),
+                )
+        except (ValueError, OverflowError):
+            pass
+        if span is None:
+            raise InvalidDateError(
                 f"Cannot parse period '{part}'. Use: last_30d, previous_30d, 2026-03, or 2026-Q1"
             )
-        }
+        ranges.append(span)
+    return ranges
 
-    if len(ranges) != 2:
-        return {"error": "Need exactly two periods to compare."}
 
+def _compare_periods(conn, data_type: TrendType, ranges: list[tuple[date, date]]) -> dict:
+    """Summarise the two spans `_compare_ranges` returned, side by side."""
     query_fn = _COMPARE_QUERY_FNS[data_type]
 
     period_a = query_fn(conn, ranges[0][0].isoformat(), ranges[0][1].isoformat())
@@ -298,7 +291,9 @@ async def withings_trends(
     Not for raw data -- use withings_get_body/sleep/activity instead.
     """
 
-    if not compare:
+    if compare:
+        ranges = _compare_ranges(compare)
+    else:
         start, end = parse_date(start_date, end_date, default_days=365)
 
     def _analyse():
@@ -306,7 +301,7 @@ async def withings_trends(
         conn = db.get_db()
 
         if compare:
-            result = _compare_periods(conn, data_type, compare)
+            result = _compare_periods(conn, data_type, ranges)
         else:
             result = _TREND_FNS[data_type](conn, start.isoformat(), end.isoformat(), period)
 
