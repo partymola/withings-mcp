@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A date range whose start is after its end is refused, naming both dates. It got an empty answer, which reads as no data. An end date given without a start no longer reaches that refusal: the start now counts back from the end date or today, whichever is earlier, so `end_date="2020-01"` alone covers the tool's default span before the end of January 2020, where it got an empty answer.
+- A date of the right shape that does not exist, such as `2026-13` or `2026-02-30`, or a count of days reaching past year 1, is refused with the accepted formats. It ended in "Error executing tool" with no reason given, and so did a full date followed by a newline, and an end date of `9999-12-31` in `withings_get_heart`, `withings_get_sleep(detail=True)` and `withings_get_body(live=True)`. That end date is now refused in every date tool. A month or a day count followed by a newline was read as if the newline were not there, and is refused too.
+- `withings_trends` checks its dates before syncing, as the other tools do, and its description no longer offers `12m`, which was never accepted.
+
 ### Packaging
 
 - The container image is built on Python 3.15 instead of 3.14. Python 3.15 joins the CI matrix and the supported-version classifiers. `requires-python` is unchanged at `>=3.13`.

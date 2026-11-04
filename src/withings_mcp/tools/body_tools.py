@@ -85,8 +85,10 @@ async def withings_get_body(
 
     Args:
         start_date: Start date as "YYYY-MM-DD", "YYYY-MM", or "30d" for
-            relative days. Default: last 30 days.
-        end_date: End date as "YYYY-MM-DD". Default: today.
+            relative days. Default: 30 days back from the end date or
+            today, whichever is earlier.
+        end_date: End date as "YYYY-MM-DD", "YYYY-MM" (its last day), or
+            "Nd". Default: today.
         metrics: Comma-separated metric filter, e.g. "weight_kg,fat_pct".
             Default: all available metrics. Names match exactly and are
             case-sensitive; one that is not on this list is refused, naming

@@ -73,8 +73,11 @@ async def withings_get_heart(
     (ScanWatch, BPM Core).
 
     Args:
-        start_date: Start date as "YYYY-MM-DD" or "30d". Default: last 30 days.
-        end_date: End date as "YYYY-MM-DD". Default: today.
+        start_date: Start date as "YYYY-MM-DD", "YYYY-MM", or "30d".
+            Default: 30 days back from the end date or today, whichever is
+            earlier.
+        end_date: End date as "YYYY-MM-DD", "YYYY-MM" (its last day), or
+            "Nd". Default: today.
 
     Returns ECG recording list with timestamps, AFib classification
     (negative/positive/inconclusive), and heart rate. Does not include

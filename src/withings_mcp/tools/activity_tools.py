@@ -171,8 +171,10 @@ async def withings_get_activity(
 
     Args:
         start_date: Start date as "YYYY-MM-DD", "YYYY-MM", or "30d".
-            Default: last 30 days.
-        end_date: End date as "YYYY-MM-DD". Default: today.
+            Default: 30 days back from the end date or today, whichever is
+            earlier.
+        end_date: End date as "YYYY-MM-DD", "YYYY-MM" (its last day), or
+            "Nd". Default: today.
         live: If true, fetch from Withings API instead of cache.
 
     Returns daily activity data sorted by date, with steps, distance
@@ -225,8 +227,10 @@ async def withings_get_workouts(
 
     Args:
         start_date: Start date as "YYYY-MM-DD", "YYYY-MM", or "90d".
-            Default: last 90 days.
-        end_date: End date as "YYYY-MM-DD". Default: today.
+            Default: 90 days back from the end date or today, whichever is
+            earlier.
+        end_date: End date as "YYYY-MM-DD", "YYYY-MM" (its last day), or
+            "Nd". Default: today.
         category: Filter by workout type, case-insensitive partial match. A
             value matching none of the categories below is refused, naming
             the ones your cache holds.

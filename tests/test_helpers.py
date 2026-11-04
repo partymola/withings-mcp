@@ -3,7 +3,10 @@
 import json
 import unittest
 from datetime import date, timedelta
+from unittest.mock import patch
 
+from withings_mcp import helpers
+from withings_mcp.errors import InvalidDateError
 from withings_mcp.helpers import (
     format_distance,
     format_duration,
@@ -71,6 +74,82 @@ class TestParseDate(unittest.TestCase):
     def test_relative_30d(self):
         start, end = parse_date("30d")
         self.assertEqual(start, date.today() - timedelta(days=30))
+
+    def test_a_start_after_the_end_is_refused_naming_both(self):
+        with self.assertRaises(InvalidDateError) as caught:
+            parse_date("2026-03-02", "2026-03-01")
+        self.assertEqual(
+            str(caught.exception),
+            "Start date 2026-03-02 is after end date 2026-03-01. "
+            "Use a start on or before that date.",
+        )
+
+    def test_a_start_after_a_defaulted_end_calls_it_today(self):
+        tomorrow = date.today() + timedelta(days=1)
+        with self.assertRaises(InvalidDateError) as caught:
+            parse_date(tomorrow.isoformat())
+        self.assertIn(f"after today ({date.today()})", str(caught.exception))
+
+    def test_a_start_on_the_end_date_is_accepted(self):
+        self.assertEqual(
+            parse_date("2026-03-01", "2026-03-01"), (date(2026, 3, 1), date(2026, 3, 1))
+        )
+
+    def test_a_missing_start_counts_back_from_the_end_date(self):
+        # From today it would land after an end in the past and be refused,
+        # though the caller sent no start.
+        self.assertEqual(
+            parse_date(None, "2020-01", default_days=30), (date(2020, 1, 1), date(2020, 1, 31))
+        )
+
+    def test_a_missing_start_before_a_future_end_counts_back_from_today(self):
+        # From the end it would land after today and answer as no data.
+        end = date.today() + timedelta(days=40)
+        self.assertEqual(
+            parse_date(None, end.isoformat(), default_days=30),
+            (date.today() - timedelta(days=30), end),
+        )
+
+    def test_the_last_date_a_tool_can_query_past_is_refused(self):
+        # The live tools ask for up to the day after the end, which date
+        # cannot hold for its last day.
+        with self.assertRaises(InvalidDateError) as caught:
+            parse_date("2026-01-01", "9999-12-31")
+        self.assertIn("9999-12-31", str(caught.exception))
+        self.assertEqual(parse_date("9999-12-01", "9999-12-30")[1], date(9999, 12, 30))
+
+    def test_a_trailing_newline_is_not_part_of_any_format(self):
+        for value in ("30d\n", "2026-03\n", "2026-03-01\n"):
+            with self.subTest(value=value):
+                with self.assertRaises(InvalidDateError):
+                    parse_date(value)
+
+    def test_a_default_reaching_past_year_one_stops_there(self):
+        self.assertEqual(
+            parse_date(None, "0001-01-05", default_days=30), (date(1, 1, 1), date(1, 1, 5))
+        )
+
+    def test_a_date_of_the_right_shape_that_does_not_exist_is_refused(self):
+        for value in ("2026-13", "2026-00", "2026-02-30", "99999999d"):
+            for args in ((value, None), (None, value)):
+                with self.subTest(args=args):
+                    with self.assertRaises(InvalidDateError) as caught:
+                        parse_date(*args)
+                    self.assertIn("YYYY-MM-DD", str(caught.exception))
+
+    def test_today_is_read_once(self):
+        # Two reads either side of midnight would put `0d` a day after the end
+        # it defaults to, and refuse it.
+        days = iter([date(2026, 3, 1), date(2026, 3, 2)])
+
+        class _MidnightPasses(date):
+            @classmethod
+            def today(cls):
+                return next(days)
+
+        with patch.object(helpers, "date", _MidnightPasses):
+            start, end = parse_date("0d")
+        self.assertEqual((start, end), (date(2026, 3, 1), date(2026, 3, 1)))
 
 
 class TestFormatResponse(unittest.TestCase):

@@ -32,7 +32,7 @@ class UnknownFilterValue(WithingsError):
 
 
 class InvalidDateError(WithingsError, ValueError):
-    """A date argument the tools cannot parse.
+    """A date argument the tools cannot parse, or a range they cannot answer.
 
     Keeps `ValueError` so `parse_date`'s existing contract is unchanged for
     any caller catching it, which `TestParseDate.test_invalid_raises` pins.

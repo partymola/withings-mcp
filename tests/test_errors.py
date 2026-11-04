@@ -107,6 +107,54 @@ class TestWhichErrorsAreExplainedToTheModel:
 
         assert "YYYY-MM-DD" in str(excinfo.value)
 
+    @pytest.mark.parametrize(
+        ("dates", "expected"),
+        [
+            (("2026-03-02", "2026-03-01"), "is after end date 2026-03-01"),
+            (("2026-13", None), "YYYY-MM-DD"),
+            (("2026-01-01", "9999-12-31"), "too late to query"),
+        ],
+        ids=["inverted", "impossible", "last-date"],
+    )
+    @pytest.mark.parametrize(
+        ("module", "tool"),
+        [
+            ("body_tools", "withings_get_body"),
+            ("sleep_tools", "withings_get_sleep"),
+            ("activity_tools", "withings_get_activity"),
+            ("activity_tools", "withings_get_workouts"),
+            ("heart_tools", "withings_get_heart"),
+            ("analysis_tools", "withings_trends"),
+        ],
+    )
+    @patch("withings_mcp.helpers.WITHINGS_CLIENT_PATH")
+    @patch("withings_mcp.helpers.WITHINGS_TOKENS_PATH")
+    def test_every_date_tool_refuses_a_bad_range_before_any_sync(
+        self, tokens_path, client_path, monkeypatch, module, tool, dates, expected
+    ):
+        # A refused date that syncs first costs a network round trip, and an
+        # empty answer to an inverted range reads as no data.
+        client_path.exists.return_value = True
+        tokens_path.exists.return_value = True
+
+        from withings_mcp import api, db
+
+        tools = importlib.import_module(f"withings_mcp.tools.{module}")
+
+        def _refuse(*args, **kwargs):
+            pytest.fail("the tool reached past parse_date")
+
+        if hasattr(tools, "auto_sync_if_stale"):
+            monkeypatch.setattr(tools, "auto_sync_if_stale", _refuse)
+        monkeypatch.setattr(db, "get_db", _refuse)
+        monkeypatch.setattr(api, "post", _refuse)
+
+        start_date, end_date = dates
+        with pytest.raises(ToolError) as excinfo:
+            asyncio.run(getattr(tools, tool)(start_date=start_date, end_date=end_date))
+
+        assert expected in str(excinfo.value)
+
     @patch("withings_mcp.helpers.WITHINGS_CLIENT_PATH")
     @patch("withings_mcp.helpers.WITHINGS_TOKENS_PATH")
     def test_a_missing_credential_still_answers_rather_than_raising(self, tokens_path, client_path):

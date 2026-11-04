@@ -283,9 +283,11 @@ async def withings_trends(
         data_type: What to analyse. Options: "body", "sleep", "activity".
         period: Aggregation period. Options: "weekly", "monthly",
             "quarterly". Default: "monthly".
-        start_date: Start date as "YYYY-MM-DD" or "12m" for relative.
-            Default: last 12 months.
-        end_date: End date as "YYYY-MM-DD". Default: today.
+        start_date: Start date as "YYYY-MM-DD", "YYYY-MM", or "365d" for
+            relative days. Default: 365 days back from the end date or
+            today, whichever is earlier.
+        end_date: End date as "YYYY-MM-DD", "YYYY-MM" (its last day), or
+            "Nd". Default: today.
         compare: Compare two periods. Format: "last_30d vs previous_30d",
             "2026-03 vs 2026-02", "2026-Q1 vs 2025-Q4".
             When set, period/start_date/end_date are ignored.
@@ -296,6 +298,9 @@ async def withings_trends(
     Not for raw data -- use withings_get_body/sleep/activity instead.
     """
 
+    if not compare:
+        start, end = parse_date(start_date, end_date, default_days=365)
+
     def _analyse():
         auto_sync_if_stale(data_type)
         conn = db.get_db()
@@ -303,10 +308,7 @@ async def withings_trends(
         if compare:
             result = _compare_periods(conn, data_type, compare)
         else:
-            start, end = parse_date(start_date, end_date, default_days=365)
-            s, e = start.isoformat(), end.isoformat()
-
-            result = _TREND_FNS[data_type](conn, s, e, period)
+            result = _TREND_FNS[data_type](conn, start.isoformat(), end.isoformat(), period)
 
         conn.close()
         return result

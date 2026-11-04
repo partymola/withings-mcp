@@ -126,8 +126,10 @@ async def withings_get_sleep(
 
     Args:
         start_date: Start date as "YYYY-MM-DD", "YYYY-MM", or "7d".
-            Default: last 7 days (detail) or last 30 days (summary).
-        end_date: End date as "YYYY-MM-DD". Default: today.
+            Default: 7 days (detail) or 30 days (summary) back from the end
+            date or today, whichever is earlier.
+        end_date: End date as "YYYY-MM-DD", "YYYY-MM" (its last day), or
+            "Nd". Default: today.
         detail: If true, return minute-by-minute sleep phases instead
             of nightly summaries. Always live, max 7 days.
         live: If true, fetch summaries from API instead of cache.
