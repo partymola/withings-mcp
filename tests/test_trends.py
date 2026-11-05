@@ -1,7 +1,10 @@
 """Tests for trend analysis: aggregation, comparison, sparse data."""
 
+import asyncio
+import json
 import unittest
 from datetime import date, timedelta
+from unittest.mock import patch
 
 from withings_mcp.db import (
     get_db,
@@ -236,10 +239,47 @@ class TestComparePeriods(unittest.TestCase):
             with self.subTest(compare=compare):
                 self.assertEqual(_compare_ranges(compare), spans)
 
+    def test_today_is_read_once(self):
+        # Read per period, `last_30d vs previous_30d` across midnight shares a day.
+        days = iter([date(2026, 3, 20)])
+
+        class _OneToday(date):
+            @classmethod
+            def today(cls):
+                return next(days)
+
+        with patch("withings_mcp.tools.analysis_tools.date", _OneToday):
+            self.assertEqual(
+                _compare_ranges("last_30d vs previous_30d"),
+                [(date(2026, 2, 19), date(2026, 3, 20)), (date(2026, 1, 20), date(2026, 2, 18))],
+            )
+
+    def test_the_dates_beside_a_compare_are_ignored(self):
+        # As the docstring says. A model often sends both, and parsing the
+        # dates anyway would refuse a compare that names its own periods.
+        from withings_mcp.tools import analysis_tools
+
+        with (
+            patch("withings_mcp.helpers.WITHINGS_CLIENT_PATH") as client_path,
+            patch("withings_mcp.helpers.WITHINGS_TOKENS_PATH") as tokens_path,
+            patch.object(analysis_tools, "auto_sync_if_stale"),
+            patch.object(analysis_tools.db, "get_db", _get_test_db),
+        ):
+            client_path.exists.return_value = True
+            tokens_path.exists.return_value = True
+            said = asyncio.run(
+                analysis_tools.withings_trends(
+                    compare="2026-03 vs 2026-02", start_date="2026-13", end_date="not-a-date"
+                )
+            )
+        result = json.loads(said)
+        self.assertEqual(result["period_1"]["period"], "2026-03-01 to 2026-03-31")
+        self.assertEqual(result["period_2"]["period"], "2026-02-01 to 2026-02-28")
+
     def test_a_period_that_names_no_dates_is_refused_by_name(self):
-        # A month of 13 or a count past year 1 raised, which reaches the
-        # caller masked; a zero or a trailing suffix answered as if valid,
-        # last_0d with a range ending before it starts.
+        # A month of 13 or a count past year 1 has the right shape and raises
+        # inside the arithmetic, a zero count has the shape and no span, and a
+        # trailing suffix has no shape at all; each is refused by name.
         for compare, bad in (
             ("2026-13 vs 2026-02", "2026-13"),
             ("2026-02 vs 2026-00", "2026-00"),

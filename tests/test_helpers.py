@@ -139,17 +139,39 @@ class TestParseDate(unittest.TestCase):
 
     def test_today_is_read_once(self):
         # Two reads either side of midnight would put `0d` a day after the end
-        # it defaults to, and refuse it.
-        days = iter([date(2026, 3, 1), date(2026, 3, 2)])
+        # it defaults to, and refuse it. One day to give, so a second read
+        # anywhere on these paths raises.
+        cases = [
+            (("0d", None), (date(2026, 3, 1), date(2026, 3, 1))),
+            (("0d", "0d"), (date(2026, 3, 1), date(2026, 3, 1))),
+            ((None, "2026-04-30"), (date(2026, 1, 30), date(2026, 4, 30))),
+            # A day ahead, so counting from today only past the span fails it.
+            ((None, "2026-03-02"), (date(2026, 1, 30), date(2026, 3, 2))),
+        ]
+        for args, expected in cases:
+            with self.subTest(args=args):
+                days = iter([date(2026, 3, 1)])
 
-        class _MidnightPasses(date):
+                class _OneToday(date):
+                    @classmethod
+                    def today(cls):
+                        return next(days)
+
+                with patch.object(helpers, "date", _OneToday):
+                    self.assertEqual(parse_date(*args, default_days=30), expected)
+
+    def test_a_refusal_names_the_today_it_read(self):
+        days = iter([date(2026, 3, 1)])
+
+        class _OneToday(date):
             @classmethod
             def today(cls):
                 return next(days)
 
-        with patch.object(helpers, "date", _MidnightPasses):
-            start, end = parse_date("0d")
-        self.assertEqual((start, end), (date(2026, 3, 1), date(2026, 3, 1)))
+        with patch.object(helpers, "date", _OneToday):
+            with self.assertRaises(InvalidDateError) as caught:
+                parse_date("2026-03-02")
+        self.assertIn("after today (2026-03-01)", str(caught.exception))
 
 
 class TestFormatResponse(unittest.TestCase):

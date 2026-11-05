@@ -71,7 +71,8 @@ def parse_date(
             f"End date {end_date} is too late to query. Use 9999-12-30 or earlier."
         )
     # By ordinal, because the date arithmetic raises past year 1. From today
-    # when the end is later, or the whole default span lies in the future.
+    # when the end is later: counted from the end, the span would move forward
+    # with it, past today altogether once the end is more than the span ahead.
     default_start = date.fromordinal(max(min(end_date, today).toordinal() - default_days, 1))
     start_date = _parse_single_date(start_str, default_start, today, is_end=False)
     if start_date > end_date:
