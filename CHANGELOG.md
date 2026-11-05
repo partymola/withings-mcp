@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- An empty answer from `withings_get_body`, `withings_get_sleep`, `withings_get_activity` or `withings_get_workouts` called with `live=True` offers no live call. Its "Try live=True" hint sent the model to repeat the call it had just made. An empty answer from the cache still offers one.
+
 ## [0.10.1] - 2026-11-05
 
 ### Changed

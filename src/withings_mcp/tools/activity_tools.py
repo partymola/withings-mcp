@@ -10,6 +10,7 @@ from ..config import WITHINGS_MEASURE_V2_URL
 from ..errors import UnknownFilterValue
 from ..helpers import (
     WORKOUT_CATEGORIES,
+    empty_answer,
     format_distance,
     format_duration,
     format_response,
@@ -202,12 +203,7 @@ async def withings_get_activity(
         entries = await anyio.to_thread.run_sync(_query)
 
     if not entries:
-        return format_response(
-            {
-                "message": "No activity data found for this period.",
-                "hint": "Try live=True to fetch directly from the API.",
-            }
-        )
+        return empty_answer("activity data", live)
 
     return format_response({"days": entries, "count": len(entries)})
 
@@ -290,11 +286,6 @@ async def withings_get_workouts(
         entries = await anyio.to_thread.run_sync(_query)
 
     if not entries:
-        return format_response(
-            {
-                "message": "No workouts found for this period.",
-                "hint": "Try live=True to fetch directly from the API.",
-            }
-        )
+        return empty_answer("workouts", live)
 
     return format_response({"workouts": entries, "count": len(entries)})

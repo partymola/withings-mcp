@@ -10,6 +10,7 @@ from ..config import WITHINGS_MEASURE_URL
 from ..errors import UnknownFilterValue
 from ..helpers import (
     MEASURE_TYPES,
+    empty_answer,
     format_response,
     parse_date,
     parse_value,
@@ -145,11 +146,6 @@ async def withings_get_body(
         entries = [e for e in entries if set(e) - {"date"}]
 
     if not entries:
-        return format_response(
-            {
-                "message": "No body measurements found for this period.",
-                "hint": "Try live=True to fetch directly from the API.",
-            }
-        )
+        return empty_answer("body measurements", live)
 
     return format_response({"measurements": entries, "count": len(entries)})

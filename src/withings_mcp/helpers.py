@@ -29,6 +29,18 @@ def format_response(result: Any) -> str:
         return json.dumps({"result": str(result)})
 
 
+def empty_answer(what: str, live: bool) -> str:
+    """The reply to a query that found nothing.
+
+    The live hint goes only with a cache read: after a live call it would send
+    the model to repeat the call it just made.
+    """
+    reply = {"message": f"No {what} found for this period."}
+    if not live:
+        reply["hint"] = "Try live=True to fetch directly from the API."
+    return format_response(reply)
+
+
 # --- Withings value decoding ---
 
 

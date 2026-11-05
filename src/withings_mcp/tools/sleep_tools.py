@@ -8,6 +8,7 @@ import anyio
 from .. import api, db
 from ..config import WITHINGS_SLEEP_V2_URL
 from ..helpers import (
+    empty_answer,
     format_duration,
     format_response,
     parse_date,
@@ -177,11 +178,6 @@ async def withings_get_sleep(
         entries = await anyio.to_thread.run_sync(_query)
 
     if not entries:
-        return format_response(
-            {
-                "message": "No sleep data found for this period.",
-                "hint": "Try live=True to fetch directly from the API.",
-            }
-        )
+        return empty_answer("sleep data", live)
 
     return format_response({"nights": entries, "count": len(entries)})

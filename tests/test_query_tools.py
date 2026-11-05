@@ -319,13 +319,6 @@ class TestGetBody:
         assert entry["weight_kg"] == 70.0  # known types still decoded
         assert "type_999" not in entry  # the unknown measure is dropped
 
-    def test_empty_live_still_shows_cache_hint(self):
-        # Known quirk: even on the live path the empty response advertises live=True.
-        with patch.object(body_tools.api, "post", return_value={"measuregrps": [], "more": 0}):
-            out = _payload(body_tools.withings_get_body(live=True))
-        assert "measurements" not in out
-        assert out["hint"] == "Try live=True to fetch directly from the API."
-
     def test_unknown_metric_filter_is_refused(self, cache):
         # An empty answer would read as a period without data. What the
         # refusal says, and the same class on withings_get_workouts, is in
@@ -581,6 +574,68 @@ class TestGetWorkouts:
         assert out["count"] == 2
         assert post.call_count == 2
         assert post.call_args_list[1].args[1]["offset"] == 2
+
+
+@pytest.mark.parametrize(
+    ("tool", "module", "empty", "what"),
+    [
+        (
+            body_tools.withings_get_body,
+            body_tools,
+            {"measuregrps": [], "more": 0},
+            "body measurements",
+        ),
+        (sleep_tools.withings_get_sleep, sleep_tools, {"series": [], "more": False}, "sleep data"),
+        (
+            activity_tools.withings_get_activity,
+            activity_tools,
+            {"activities": [], "more": False},
+            "activity data",
+        ),
+        (
+            activity_tools.withings_get_workouts,
+            activity_tools,
+            {"series": [], "more": False},
+            "workouts",
+        ),
+    ],
+    ids=["body", "sleep", "activity", "workouts"],
+)
+def test_an_empty_live_answer_does_not_offer_the_call_just_made(tool, module, empty, what):
+    """Offered after a live call, the hint sends the model to repeat it."""
+    with patch.object(module.api, "post", return_value=empty):
+        out = _payload(tool(live=True))
+    assert out == {"message": f"No {what} found for this period."}
+
+
+@pytest.mark.parametrize(
+    ("tool", "what"),
+    [
+        (body_tools.withings_get_body, "body measurements"),
+        (sleep_tools.withings_get_sleep, "sleep data"),
+        (activity_tools.withings_get_activity, "activity data"),
+        (activity_tools.withings_get_workouts, "workouts"),
+    ],
+    ids=["body", "sleep", "activity", "workouts"],
+)
+def test_an_empty_cache_answer_offers_a_live_call(cache, tool, what):
+    out = _payload(tool("2026-01-01", "2026-01-31"))
+    assert out == {
+        "message": f"No {what} found for this period.",
+        "hint": "Try live=True to fetch directly from the API.",
+    }
+
+
+def test_a_live_answer_a_filter_emptied_says_only_that_none_was_found():
+    """Withings did return data here, so the reply cannot say it returned none."""
+    weight_only = {"measuregrps": [fake_measure_group(grpid=1001, timestamp=_TS)], "more": 0}
+    with patch.object(body_tools.api, "post", return_value=weight_only):
+        body = _payload(body_tools.withings_get_body(metrics="spo2_pct", live=True))
+    walk = {"series": [fake_workout(category=1)], "more": False}
+    with patch.object(activity_tools.api, "post", return_value=walk):
+        workouts = _payload(activity_tools.withings_get_workouts(category="cycling", live=True))
+    assert body == {"message": "No body measurements found for this period."}
+    assert workouts == {"message": "No workouts found for this period."}
 
 
 # --- withings_get_heart (always live) ---
