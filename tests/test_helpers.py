@@ -161,6 +161,12 @@ class TestFormatResponse(unittest.TestCase):
         result = format_response([1, 2, 3])
         self.assertEqual(json.loads(result), [1, 2, 3])
 
+    def test_compact_json_keeps_a_reply_as_long_as_its_contents(self):
+        # Indented, the output grows with the square of a reply's nesting.
+        for result in ({"a": {"b": [1, {"c": 2}]}}, [{"a": [1]}, 2]):
+            with self.subTest(result=result):
+                self.assertEqual(format_response(result), json.dumps(result))
+
     def test_none(self):
         result = format_response(None)
         self.assertEqual(json.loads(result), None)
