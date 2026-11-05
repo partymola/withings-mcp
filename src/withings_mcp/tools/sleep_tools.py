@@ -163,8 +163,10 @@ async def withings_get_sleep(
 
         def _query():
             conn = db.get_db()
-            rows = db.query_sleep(conn, start.isoformat(), end.isoformat())
-            conn.close()
+            try:
+                rows = db.query_sleep(conn, start.isoformat(), end.isoformat())
+            finally:
+                conn.close()
             # Format durations for display
             for r in rows:
                 r["total_sleep"] = format_duration(r.get("total_sleep_sec"))

@@ -32,6 +32,7 @@ from tests.fixtures import (
     fake_sleep_summary,
     fake_workout,
     fake_workout_db_row,
+    tracked_connections,
 )
 from withings_mcp import db, helpers
 from withings_mcp.tools import activity_tools, body_tools, device_tools, heart_tools, sleep_tools
@@ -636,6 +637,41 @@ def test_a_live_answer_a_filter_emptied_says_only_that_none_was_found():
         workouts = _payload(activity_tools.withings_get_workouts(category="cycling", live=True))
     assert body == {"message": "No body measurements found for this period."}
     assert workouts == {"message": "No workouts found for this period."}
+
+
+@pytest.mark.parametrize(
+    ("tool", "query"),
+    [
+        (body_tools.withings_get_body, "query_body"),
+        (sleep_tools.withings_get_sleep, "query_sleep"),
+        (activity_tools.withings_get_activity, "query_activities"),
+        (activity_tools.withings_get_workouts, "query_workouts"),
+    ],
+    ids=["body", "sleep", "activity", "workouts"],
+)
+def test_a_failing_cache_read_closes_its_connection(tool, query):
+    get_db, opened, closed = tracked_connections()
+    with (
+        patch.object(db, "get_db", get_db),
+        patch.object(db, query, side_effect=RuntimeError("the read failed")),
+        pytest.raises(RuntimeError),
+    ):
+        _run(tool("2026-01-01", "2026-01-31"))
+    assert opened, "no connection was opened, so this proves nothing"
+    assert closed == opened
+
+
+def test_a_failing_staleness_check_closes_its_connection():
+    from withings_mcp.tools import sync_tools
+
+    get_db, opened, closed = tracked_connections()
+    with (
+        patch.object(db, "get_db", get_db),
+        patch.object(db, "get_last_sync", side_effect=RuntimeError("the read failed")),
+    ):
+        sync_tools.auto_sync_if_stale("body")
+    assert opened, "no connection was opened, so this proves nothing"
+    assert closed == opened
 
 
 # --- withings_get_heart (always live) ---

@@ -113,8 +113,10 @@ def auto_sync_if_stale(data_type: str) -> None:
     """
     try:
         conn = db.get_db()
-        last = db.get_last_sync(conn, data_type)
-        conn.close()
+        try:
+            last = db.get_last_sync(conn, data_type)
+        finally:
+            conn.close()
 
         today = date.today().isoformat()
         if last is None or last[:10] < today:

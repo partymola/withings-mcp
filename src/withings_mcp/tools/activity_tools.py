@@ -191,8 +191,10 @@ async def withings_get_activity(
 
         def _query():
             conn = db.get_db()
-            rows = db.query_activities(conn, start.isoformat(), end.isoformat())
-            conn.close()
+            try:
+                rows = db.query_activities(conn, start.isoformat(), end.isoformat())
+            finally:
+                conn.close()
             for r in rows:
                 r["distance"] = format_distance(r.get("distance_m"))
                 r["light_activity"] = format_duration(r.get("soft_sec"))
@@ -275,8 +277,10 @@ async def withings_get_workouts(
 
         def _query():
             conn = db.get_db()
-            rows = db.query_workouts(conn, start.isoformat(), end.isoformat(), wanted)
-            conn.close()
+            try:
+                rows = db.query_workouts(conn, start.isoformat(), end.isoformat(), wanted)
+            finally:
+                conn.close()
             for r in rows:
                 r["type"] = r.get("category_name", "other")
                 r["duration"] = format_duration(r.get("duration_sec"))

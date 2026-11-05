@@ -299,14 +299,12 @@ async def withings_trends(
     def _analyse():
         auto_sync_if_stale(data_type)
         conn = db.get_db()
-
-        if compare:
-            result = _compare_periods(conn, data_type, ranges)
-        else:
-            result = _TREND_FNS[data_type](conn, start.isoformat(), end.isoformat(), period)
-
-        conn.close()
-        return result
+        try:
+            if compare:
+                return _compare_periods(conn, data_type, ranges)
+            return _TREND_FNS[data_type](conn, start.isoformat(), end.isoformat(), period)
+        finally:
+            conn.close()
 
     result = await anyio.to_thread.run_sync(_analyse)
     return format_response(result)

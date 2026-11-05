@@ -6,13 +6,16 @@ import unittest
 from datetime import date, timedelta
 from unittest.mock import patch
 
+from mcp.server.mcpserver.exceptions import ToolError
+
+from tests.fixtures import tracked_connections
 from withings_mcp.db import (
     get_db,
     save_activity,
     save_body_measurement,
     save_sleep_summary,
 )
-from withings_mcp.errors import InvalidDateError
+from withings_mcp.errors import InvalidDateError, WithingsError
 from withings_mcp.tools.analysis_tools import (
     _compare_periods,
     _compare_ranges,
@@ -299,6 +302,31 @@ class TestComparePeriods(unittest.TestCase):
                     f"Cannot parse period '{bad}'. "
                     "Use: last_30d, previous_30d, 2026-03, or 2026-Q1",
                 )
+
+
+class TestTheTrendConnection(unittest.TestCase):
+    def test_a_failing_trend_does_not_abandon_the_connection(self):
+        # Closed where the trend fails, not whenever the traceback is freed.
+        from withings_mcp.tools import analysis_tools
+
+        def _fails(*args, **kwargs):
+            raise WithingsError("the trend could not be computed")
+
+        get_db, opened, closed = tracked_connections()
+        with (
+            patch("withings_mcp.helpers.WITHINGS_CLIENT_PATH") as client_path,
+            patch("withings_mcp.helpers.WITHINGS_TOKENS_PATH") as tokens_path,
+            patch.object(analysis_tools, "auto_sync_if_stale"),
+            patch.object(analysis_tools.db, "get_db", get_db),
+            patch.dict(analysis_tools._TREND_FNS, {"body": _fails}),
+        ):
+            client_path.exists.return_value = True
+            tokens_path.exists.return_value = True
+            # require_auth converts the WithingsError on its way out.
+            with self.assertRaises(ToolError):
+                asyncio.run(analysis_tools.withings_trends(data_type="body"))
+        self.assertTrue(opened, "no connection was opened, so this proves nothing")
+        self.assertEqual(closed, opened)
 
 
 if __name__ == "__main__":

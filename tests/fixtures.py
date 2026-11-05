@@ -4,8 +4,27 @@ ALL test data in this project MUST come from this module.
 Values are obviously fictional round numbers - never use real health data.
 """
 
+import sqlite3
+
 # Unclosed, so it raises at the parse and nothing holds a deep value afterwards.
 DEEP_JSON = "[" * 200_000
+
+
+def tracked_connections():
+    """A get_db replacement, and the connections it has opened and closed."""
+    opened, closed = [], []
+
+    class _Recording(sqlite3.Connection):
+        def close(self):
+            closed.append(self)
+            super().close()
+
+    def get_db(*args, **kwargs):
+        conn = sqlite3.connect(":memory:", factory=_Recording, check_same_thread=False)
+        opened.append(conn)
+        return conn
+
+    return get_db, opened, closed
 
 
 def _encode_value(value, decimals=1):
