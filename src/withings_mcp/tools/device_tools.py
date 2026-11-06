@@ -38,7 +38,7 @@ def _fetch_devices():
     return devices
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @require_auth
 async def withings_get_devices() -> str:
     """Get connected Withings devices with battery and firmware info.

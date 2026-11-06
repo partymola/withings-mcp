@@ -60,7 +60,7 @@ def _fetch_heart(start_date, end_date):
     return results
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @require_auth
 async def withings_get_heart(
     start_date: str | None = None,

@@ -158,7 +158,7 @@ def _fetch_workouts_live(start_date, end_date, category_lower=None):
     return results
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @require_auth
 async def withings_get_activity(
     start_date: str | None = None,
@@ -210,7 +210,7 @@ async def withings_get_activity(
     return format_response({"days": entries, "count": len(entries)})
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @require_auth
 async def withings_get_workouts(
     start_date: str | None = None,

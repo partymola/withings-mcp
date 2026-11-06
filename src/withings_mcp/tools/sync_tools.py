@@ -369,7 +369,7 @@ def _sync_workouts(conn, start_ymd: str, end_ymd: str) -> int:
     return count
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @require_auth
 async def withings_sync(
     data_types: str = "all",

@@ -70,7 +70,7 @@ def _fetch_live(start_date, end_date):
     return results
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @require_auth
 async def withings_get_body(
     start_date: str | None = None,

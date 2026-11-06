@@ -108,7 +108,7 @@ def _fetch_detail_live(start_date, end_date):
     return phases
 
 
-@mcp.tool()
+@mcp.tool(structured_output=False)
 @require_auth
 async def withings_get_sleep(
     start_date: str | None = None,
